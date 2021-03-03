@@ -3,11 +3,13 @@ import numpy as np
 from data import DataSet
 import os
 import warnings
-from tensorflow_core.python.keras.models import Model
-from test import Post, Prior, HawkesProcess, Encoder, Decoder, test_test
+from tensorflow.keras.models import Model
+from test import Post, Prior, HawkesProcess, Encoder, Decoder
 from scipy import stats
 from bayes_opt import BayesianOptimization
-
+import utils
+import pandas as pd
+import re
 
 warnings.filterwarnings(action='once')
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -100,9 +102,53 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     # test_set = np.load('../../Trajectory_generate/dataset_file/HF_validate_.npy').reshape(-1, 6, 30)
     # test_set = np.load('../../Trajectory_generate/dataset_file/HF_test_.npy').reshape(-1, 6, 30)
 
-    train_set = np.load("../../Trajectory_generate/dataset_file/mimic_train_x_.npy").reshape(-1, 6, 37)
-    test_set = np.load("../../Trajectory_generate/dataset_file/mimic_test_x_.npy").reshape(-1, 6, 37)
+    #train_set = np.load("../../Trajectory_generate/dataset_file
+    # /mimic_train_x_.npy").reshape(-1, 6, 37)
+    #test_set = np.load("../../Trajectory_generate/dataset_file/mimic_test_x_
+    # .npy").reshape(-1, 6, 37)
     # test_set = np.load("../../Trajectory_generate/dataset_file/mimic_validate_.npy").reshape(-1, 6, 37)
+
+    # Load (some) raw data:
+    raw_data = pd.read_spss('BOUNCE_Dataset_m0_m3_m6_stefanos.sav')
+
+    #  Some debugging: get only the columns you need:
+    all_cols = raw_data.columns.values
+
+    # Get M0/M3 as train and M6 as test:
+    re_patern = re.compile('^M[0,3,6].*')
+    vals, counts = np.unique(
+        [i[3:] for i in all_cols if re_patern.match(i)],
+        return_counts=True
+    )
+    valid_cols_idx = np.where(counts == 3, True, False)
+    valid_cols = [i for i in all_cols if i[3:] in vals[valid_cols_idx] and
+                  re_patern.match(i)]
+    # TODO: any other way to split the features, making sure that they are
+    #  sorted? I feel uneasy to do TWO sorts.
+    features = vals[valid_cols_idx]
+    features.sort()
+    total_features = len(features)
+    # make sure that the features across time points (months) are consistent!
+    valid_cols.sort()
+    data_tmp = raw_data[valid_cols]
+
+    # Transform the data in order to have the time frame also. Dims are:
+    # patients, features, timepoints
+    data_mat_tmp = np.transpose(
+        data_tmp.values.reshape(-1, 3, total_features),
+        (0, 2, 1)
+    )
+    # Now to make them Dataframe, MultiIndex compatible you need:
+    data_mat = data_mat_tmp.reshape( -1, 3)
+    patients_arr = np.arange(0, len(raw_data))
+    timepoints_arr = np.arange(0, 3)
+    features_arr = features
+    midx = pd.MultiIndex.from_product([patients_arr, features_arr])
+    # Finally create the multidimentional table (index in pandas) with all
+    # the data. This makes it easy to handle. The testing/training functions
+    # will also handle it well.
+    data_all = pd.DataFrame(data_mat, index=midx)
+
 
     previous_visit = 3
     predicted_visit = 3
@@ -372,7 +418,8 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
 
 
 if __name__ == '__main__':
-    test_test('VAE_Hawkes_GAN_HF_MIMIC_3_3_重新训练——8——27.txt')
+    # Start logger:
+    utils.init_logger('blah.log')
     # BO = BayesianOptimization(
     #     train, {
     #         'hidden_size': (5, 8),

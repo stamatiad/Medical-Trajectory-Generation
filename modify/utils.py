@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow_core.python.keras.models import Model
+from tensorflow.keras.models import Model
 import sys
 import os
 from sklearn.metrics import mean_squared_error
@@ -125,7 +125,7 @@ class HawkesProcess(Model):
         return condition_intensity, likelihood
 
 
-def test_test(name):
+def init_logger(name):
     class Logger(object):
         def __init__(self, filename="Default.log"):
             self.terminal = sys.stdout

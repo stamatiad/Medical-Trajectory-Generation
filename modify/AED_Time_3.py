@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow_core.python.keras.models import Model
+from tensorflow.keras.models import Model
 from data import DataSet
 from bayes_opt import BayesianOptimization
 from TimeLSTMCell_3 import *

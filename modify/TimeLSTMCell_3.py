@@ -1,7 +1,7 @@
 import numpy as np
-from tensorflow_core.python.keras import backend as K
-from tensorflow_core.python.keras import activations, initializers, regularizers, constraints
-from tensorflow_core.python.keras.engine.base_layer import Layer
+from tensorflow.keras import backend as K
+from tensorflow.keras import activations, initializers, regularizers, constraints
+from tensorflow.keras.engine.base_layer import Layer
 from tensorflow.python.ops import array_ops
 from tensorflow.python.util import nest
 from tensorflow.python.framework import tensor_shape

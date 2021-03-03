@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow_core.python.keras.models import Model
+from tensorflow.keras.models import Model
 from data import DataSet
 from bayes_opt import BayesianOptimization
 import scipy.stats as stats
@@ -206,27 +206,6 @@ def train(hidden_size, learning_rate, l2_regularization):
     return mse_loss_predicted, mae_predicted, np.mean(r_value_all), np.mean(p_value_all)
     # return -1*mse_loss_predicted
 
-
-def test_test(name):
-    class Logger(object):
-        def __init__(self, filename="Default.log"):
-            self.terminal = sys.stdout
-            self.log = open(filename, "a", encoding='utf-8')
-
-        def write(self, message):
-            self.terminal.write(message)
-            self.log.write(message)
-
-        def flush(self):
-            pass
-
-    path = os.path.abspath(os.path.dirname(__file__))
-    type = sys.getfilesystemencoding()
-    sys.stdout = Logger(name)
-
-    print(path)
-    print(os.path.dirname(__file__))
-    print('------------------')
 
 
 if __name__ == '__main__':

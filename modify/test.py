@@ -20,10 +20,15 @@ class Encoder(Model):
     def __init__(self, hidden_size):
         super().__init__(name='encode_share')
         self.hidden_size = hidden_size
+        # Is return_state==True here?
         self.LSTM_Cell_encode = tf.keras.layers.LSTMCell(hidden_size)
 
-    def call(self, input_x):
+    # This is driving me nuts; how could this code run in the first place
+    # when the convention is __call__ instead of call? I can not run it.
+    def __call__(self, input_x):
+        # This must be a 2-d tensor [batch, features]:
         sequence_time, c, h = input_x
+        # These are tensors of [batch, units]:
         state = [c, h]
         output, state = self.LSTM_Cell_encode(sequence_time, state)
         return state[0], state[1]

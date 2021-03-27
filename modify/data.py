@@ -3,6 +3,8 @@ from sklearn.preprocessing import MinMaxScaler
 import h5py
 from collections import defaultdict
 from sklearn.preprocessing import normalize
+import tensorflow as tf
+import utils
 
 
 class DataSet(object):
@@ -46,10 +48,26 @@ class DataSet(object):
             end = self._index_in_epoch
             return self._dynamic_features[start:end]
 
+    @utils.with_reproducible_rng
     def _shuffle(self):
+        # This is so confusing! If the input is ndarray this works, but later on
+        # code complains that this is not a tensor (literally the next line
+        # of code); if this is tensor, then the indexing does not work... No
+        # offence, these are my comments to run through the code fast.
         index = np.arange(self._num_examples)
+        # This shuffles in place:
         np.random.shuffle(index)
-        self._dynamic_features = self._dynamic_features[index]
+        #self._dynamic_features = self._dynamic_features[index]
+        # So I'm using this method I do not know if this is as fast as
+        # handling it as ndarray right before training, but I want to get
+        # proficient in tensorflow, so there is that:
+
+        self._dynamic_features = \
+            tf.gather(
+                self._dynamic_features,
+                index
+            )
+        print("Pronto")
 
     @property
     def dynamic_features(self):

@@ -4,7 +4,29 @@ from tensorflow.keras.models import Model
 import sys
 import os
 from sklearn.metrics import mean_squared_error
+from functools import wraps
 
+def with_reproducible_rng(class_method):
+    '''
+    This is a function wrapper that calls rng.seed before every method call. Therefore user is expected to get the exact
+    same results every time between different method calls of the same class instance.
+    Multiple method calls in main file will produce the exact same results. This is of course if model parameters are
+    the same between calls; changing e.g. cell no, will invoke different number of rand() called in each case.
+    As seed, the network serial number is used.
+    A function wrapper is used to dissociate different function calls: e.g. creating stimulus will be the same, even if
+    user changed the number of rand() was called in a previous class function, resulting in the same stimulated cells.
+    Multiple method calls in main file will produce the exact same results. This is of course if model parameters are
+    the same between calls; changing e.g. cell no, will invoke different number of rand() called in each case.
+    :param func:
+    :return:
+    '''
+    @wraps(class_method)
+    def reset_rng(*args, **kwargs):
+        # this translates to self.serial_no ar runtime
+        np.random.seed(0)
+        print(f'{class_method.__name__} reseeds the RNG.')
+        return class_method(*args, **kwargs)
+    return reset_rng
 
 # transform each step of x, i.e. x_i into h_i
 class Encoder(Model):

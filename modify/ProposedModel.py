@@ -10,6 +10,7 @@ from bayes_opt import BayesianOptimization
 import utils
 import pandas as pd
 import re
+from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings(action='once')
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -17,6 +18,13 @@ gpus = tf.config.experimental.list_physical_devices(device_type='GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
+def unstack_to_mat(df, nfeatures):
+    # unstack getting the dims from args, because df is giving me hard time.
+    m = int(df.shape[0]/nfeatures)
+    n = int(nfeatures)
+    #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
+    arr = df.values.reshape(m, n, -1).swapaxes(1, 2)
+    return arr
 
 class Discriminator(Model):
     def __init__(self, hidden_size, previous_visit, predicted_visit):
@@ -128,6 +136,7 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     features = vals[valid_cols_idx]
     features.sort()
     total_features = len(features)
+    patient_no = raw_data.shape[0]
     # make sure that the features across time points (months) are consistent!
     valid_cols.sort()
     data_tmp = raw_data[valid_cols]
@@ -140,22 +149,45 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     )
     # Now to make them Dataframe, MultiIndex compatible you need:
     data_mat = data_mat_tmp.reshape( -1, 3)
-    patients_arr = np.arange(0, len(raw_data))
-    timepoints_arr = np.arange(0, 3)
+    patients_d = { i:f"Patient_{i}" for i in range(patient_no)}
+    #patients_arr = np.arange(0, len(raw_data))
+    timepoints_d = { i:f"M_{i}" for i in range(0, 9, 3)}
+    #timepoints_arr = np.arange(0, 3)
     features_arr = features
-    midx = pd.MultiIndex.from_product([patients_arr, features_arr])
+    feature_dims = len(features_arr)
+
+    midx = pd.MultiIndex.from_product([patients_d.values(), features_arr])
     # Finally create the multidimentional table (index in pandas) with all
     # the data. This makes it easy to handle. The testing/training functions
     # will also handle it well.
-    data_all = pd.DataFrame(data_mat, index=midx)
+    data_all = pd.DataFrame(data_mat, index=midx, columns=timepoints_d.values())
 
+    # Divide to train/test set: (basic up to this phase):
+    # Do this with sklearn:
+    split = [0.8, 0.2]
+    split_seed = 123
 
-    previous_visit = 3
-    predicted_visit = 3
+    train_df, test_df = train_test_split(
+        data_all, train_size=split[0],
+        test_size=split[1],
+        random_state=split_seed
+    )
 
-    feature_dims = train_set.shape[2] - 1
+    #train_df.reindex()
 
-    train_set = DataSet(train_set)
+    previous_visit = 1
+    # This must be the time step. Since I don't have much, set it to one:
+    predicted_visit = 1
+
+    #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
+
+    # Cast data to tensors:
+    train_mat = tf.constant(
+        unstack_to_mat(train_df, feature_dims),
+        dtype=tf.float16
+    )
+
+    train_set = DataSet(train_mat)
     train_set.epoch_completed = 0
     batch_size = 64
     epochs = 1
@@ -171,11 +203,13 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     # reconstruction_mse_imbalance = 10 ** reconstruction_mse_imbalance
     # likelihood_imbalance = 10 ** likelihood_imbalance
 
-    print('feature_dims---{}'.format(feature_dims))
+    print(f'feature_dims---{feature_dims}')
 
-    print('previous_visit---{}---predicted_visit----{}-'.format(previous_visit, predicted_visit))
+    print(f'previous_visit---{previous_visit}---predicted_visit----'
+          f'{predicted_visit}-')
 
-    print('hidden_size---{}---z_dims---{}---l2_regularization---{}---learning_rate---{}--n_disc---{}-'
+    print('hidden_size---{}---z_dims---{}---l2_regularization---{'
+          '}---learning_rate---{}--n_disc---{}-'
           'generated_mse_imbalance---{}---generated_loss_imbalance---{}---'
           'kl_imbalance---{}---reconstruction_mse_imbalance---{}---'
           'likelihood_imbalance---{}'.format(hidden_size, z_dims, l2_regularization,
@@ -205,8 +239,14 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
 
     while train_set.epoch_completed < epochs:
         input_train = train_set.next_batch(batch_size=batch_size)
-        input_x_train = tf.cast(input_train[:, :, 1:], tf.float32)
-        input_t_train = tf.cast(input_train[:, :, 0], tf.float32)
+        # It the second dim is the time, what is this?? Should be swapped; Also
+        # from the usage of var generated_trajectory I also deduce that the
+        # second dim is the time axis!!!
+
+        # I'm guessing this is a separation between the initial point and the
+        # consequent points in time:
+        input_x_train = tf.cast(input_train[:, 1:, :], tf.float32)
+        input_t_train = tf.cast(input_train[:, 0, :], tf.float32)
         batch = input_train.shape[0]
 
         with tf.GradientTape() as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
@@ -217,9 +257,11 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
             z_log_var_post_all = tf.zeros(shape=[batch, 0, z_dims])
             z_mean_prior_all = tf.zeros(shape=[batch, 0, z_dims])
             z_log_var_prior_all = tf.zeros(shape=[batch, 0, z_dims])
+            # previous_visit should be >=1 or else we skip encoding altogether:
             for predicted_visit_ in range(predicted_visit):
                 sequence_last_time = input_x_train[:, previous_visit + predicted_visit_ - 1, :]
                 sequence_current_time = input_x_train[:, previous_visit+predicted_visit_, :]
+                # From this I get that the second dim is the time:
                 for previous_visit_ in range(previous_visit+predicted_visit_):
                     sequence_time = input_x_train[:, previous_visit_, :]
                     if previous_visit_ == 0:

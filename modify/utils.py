@@ -6,6 +6,21 @@ import os
 from sklearn.metrics import mean_squared_error
 from functools import wraps
 
+def generate_input_slices(input=None, previous=None, predicted=None, axis=1):
+    '''
+    Generate starting/ending positions of q_total windows q of size q_size.
+    :param input: The input nparray
+    :param axis: The axis to slice the input data.
+    :param previous: the previous (t-1) input vector time (i.e. index)
+    :param predicted: the current (t) input vector time (i.e. index)
+    :return:
+    '''
+    # TODO: run tests to make sure that input CAN be sliced.
+    # T_0 is the first time point.
+    for t in range(1, predicted):
+        yield ( input[:, t-1, :], input [:, t, :])
+
+
 def with_reproducible_rng(class_method):
     '''
     This is a function wrapper that calls rng.seed before every method call. Therefore user is expected to get the exact
@@ -190,6 +205,7 @@ def split_dataset(dataset, k):
     return train_set, validate_set
 
 
+'''
 if __name__== '__main__':
     train_set = np.load('../../Trajectory_generate/dataset_file/HF_train_.npy').reshape(-1, 6, 30)
     test_set = np.load('../../Trajectory_generate/dataset_file/HF_validate_.npy').reshape(-1, 6, 30)
@@ -199,7 +215,7 @@ if __name__== '__main__':
     for i in range(k):
         print(train_set[k].shape)
         print(validate_set[k].shape)
-
+'''
 
 
 

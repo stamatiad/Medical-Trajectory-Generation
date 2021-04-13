@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from data import DataSet
-import os
+import os,sys
 import warnings
 from tensorflow.keras.models import Model
 from test import Post, Prior, HawkesProcess, Encoder, Decoder
@@ -11,6 +11,7 @@ import utils
 import pandas as pd
 import re
 from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings(action='once')
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -162,22 +163,56 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     # will also handle it well.
     data_all = pd.DataFrame(data_mat, index=midx, columns=timepoints_d.values())
 
+    # Fill the NaN values with a value that does not appear naturally in the
+    # input to signify a missing value (Can I do this?).
+    data_all.fillna(-1, inplace=True)
+
     # Divide to train/test set: (basic up to this phase):
     # Do this with sklearn:
     split = [0.8, 0.2]
     split_seed = 123
 
+    # Try to visualize/white the data to get a grip:
+
+    for feature in features_arr:
+        fig, ax = plt.subplots()
+        blah = data_all.xs(feature, level=1, drop_level=False)
+        feature_1 = blah['M_0'].values
+        feature_2 = blah['M_3'].values
+        feature_3 = blah['M_6'].values
+        all_feats = np.concatenate((feature_1, feature_2, feature_3))
+        bins = np.linspace(all_feats.min(), all_feats.max(), 20)
+        histo, _ = np.histogram(feature_1, bins)
+        ax.plot(bins[1:], histo, color='C0', label='M0')
+        histo, _ = np.histogram(feature_2, bins)
+        ax.plot(bins[1:], histo, color='C1', label='M3')
+        histo, _ = np.histogram(feature_3, bins)
+        ax.plot(bins[1:], histo, color='C2', label='M6')
+        plt.legend()
+        #plt.show()
+        plt.savefig(f'Feature_{feature}.png')
+        plt.close()
+
+    # This requires df to be sorted, Why it is not?
+    #blah = data_all.loc[(slice(None), slice('Apetite_QLQ30')), :]
+
     train_df, test_df = train_test_split(
         data_all, train_size=split[0],
         test_size=split[1],
-        random_state=split_seed
+        shuffle=False,
+        #random_state=split_seed
     )
 
     #train_df.reindex()
 
-    previous_visit = 1
-    # This must be the time step. Since I don't have much, set it to one:
-    predicted_visit = 1
+    # This is the starting visit that the algorithm sees. I set it to 0,
+    # since it is the first ever patient checkpoint/admission (month 0 in the
+    # dataset).
+    previous_visit = 0
+    # This is the future admissions that the algorithm will predict. I set it
+    # to 2 since this is the available ones that I have and I want to
+    # maximally utilize my data (corresponds to M3, M6 admissions).
+    predicted_visit = 2
 
     #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
 
@@ -190,7 +225,7 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     train_set = DataSet(train_mat)
     train_set.epoch_completed = 0
     batch_size = 64
-    epochs = 1
+    epochs = 50
 
     # hidden_size = 2**(int(hidden_size))
     # z_dims = 2**(int(z_dims))
@@ -208,14 +243,15 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     print(f'previous_visit---{previous_visit}---predicted_visit----'
           f'{predicted_visit}-')
 
-    print('hidden_size---{}---z_dims---{}---l2_regularization---{'
-          '}---learning_rate---{}--n_disc---{}-'
-          'generated_mse_imbalance---{}---generated_loss_imbalance---{}---'
-          'kl_imbalance---{}---reconstruction_mse_imbalance---{}---'
-          'likelihood_imbalance---{}'.format(hidden_size, z_dims, l2_regularization,
-                                             learning_rate, n_disc, generated_mse_imbalance,
-                                             generated_loss_imbalance, kl_imbalance,
-                                             reconstruction_mse_imbalance, likelihood_imbalance))
+    print(f'hidden_size---{hidden_size}---z_dims---'
+          f'{z_dims}---l2_regularization---{z_dims}'
+          f'---learning_rate---{learning_rate}--n_disc---{n_disc}-'
+          f'generated_mse_imbalance---'
+          f'{generated_mse_imbalance}---generated_loss_imbalance---'
+          f'{generated_loss_imbalance}---'
+          f'kl_imbalance---{kl_imbalance}---reconstruction_mse_imbalance---'
+          f'{reconstruction_mse_imbalance}---'
+          f'likelihood_imbalance---{likelihood_imbalance}')
 
     encode_share = Encoder(hidden_size=hidden_size)
     decoder_share = Decoder(hidden_size=hidden_size, feature_dims=feature_dims)
@@ -242,11 +278,26 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
         # It the second dim is the time, what is this?? Should be swapped; Also
         # from the usage of var generated_trajectory I also deduce that the
         # second dim is the time axis!!!
+        # After reconsideration the second dim is the features (makes sense
+        # to me). Don't sweat it; do it again.
 
-        # I'm guessing this is a separation between the initial point and the
-        # consequent points in time:
-        input_x_train = tf.cast(input_train[:, 1:, :], tf.float32)
-        input_t_train = tf.cast(input_train[:, 0, :], tf.float32)
+        input_x_train = input_train
+        #input_x_train = tf.cast(input_train[:, 1:, :], tf.float32)
+        # This input_t_train should be the times of admissions. Should be:
+        # batch_size x times of admissions.
+        #input_t_train = tf.cast(input_train[:, 0, :], tf.float32)
+        input_t_train = tf.constant(
+            np.repeat(
+                np.arange(
+                    previous_visit,
+                    (previous_visit + predicted_visit) * 3 +1 ,
+                    3
+                ),
+                input_x_train.shape[0]
+            ).reshape(
+            input_x_train.shape[0], 3, order='F'),
+            dtype=tf.float16
+        )
         batch = input_train.shape[0]
 
         with tf.GradientTape() as gen_tape, tf.GradientTape(persistent=True) as disc_tape:
@@ -257,41 +308,116 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
             z_log_var_post_all = tf.zeros(shape=[batch, 0, z_dims])
             z_mean_prior_all = tf.zeros(shape=[batch, 0, z_dims])
             z_log_var_prior_all = tf.zeros(shape=[batch, 0, z_dims])
+            # Multiple things I do not understand:
+            # 1. If the user put unexpected values this loop will be skipped
+            # altogether, so the generator should fail?
+            # 2. I can not understand the previous_visit variable range. If
+            # must it start from 0 then the loop will fail (first range
+            # produced value will always result in index -1). So it always
+            # gets the previous point from the point given by the user??
+
             # previous_visit should be >=1 or else we skip encoding altogether:
-            for predicted_visit_ in range(predicted_visit):
-                sequence_last_time = input_x_train[:, previous_visit + predicted_visit_ - 1, :]
-                sequence_current_time = input_x_train[:, previous_visit+predicted_visit_, :]
-                # From this I get that the second dim is the time:
+            # I don't know the algorithm on the original author's data,
+            # but in my case it does not make any sense to have 0 diff to h_i
+            # and h_i_1 because of NaN and 0 on LSTM h. So I adapt the code
+            # accordingly.
+
+            # TODO: This should always get initialized!
+            decode_c_generate = tf.Variable(
+                tf.zeros(shape=[batch, hidden_size]))
+            decode_h_generate = tf.Variable(
+                tf.zeros(shape=[batch, hidden_size]))
+
+            decode_c_reconstruction = tf.Variable(
+                tf.zeros(shape=[batch, hidden_size]))
+            decode_h_reconstruction = tf.Variable(
+                tf.zeros(shape=[batch, hidden_size]))
+            # TODO: rewrite this in more pythonic way.
+            # TODO: My understanding is that this should be only one
+            #  iteration (i.e. no for loop) in my case, since I only need to
+            #  predict the next patient state. ( Not necessary only the next
+            #  one, yet I can only train with only the next one, due to
+            #  limited timepoints in the dataset).
+            for predicted_visit_ in range(1, predicted_visit):
+                sequence_last_time = \
+                    input_x_train[:, previous_visit + predicted_visit_ , :]
+                sequence_current_time = \
+                    input_x_train[:, previous_visit+predicted_visit_ +1, :]
+                # Also struggling to understand:
+                # Can I write this as an single feed to LSTM?
+
+                # previous_visit_ will always be 0 at the beginning of the loop:
+                encode_c = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
+                encode_h = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
+                # TODO: rewrite this in more pythonic way.
                 for previous_visit_ in range(previous_visit+predicted_visit_):
                     sequence_time = input_x_train[:, previous_visit_, :]
-                    if previous_visit_ == 0:
-                        encode_c = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
-                        encode_h = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
-
+                    # why we need to feed each one of the time slices and hot
+                    # the whole sequence?? Does not the code handles the
+                    # whole sequence?
                     encode_c, encode_h = encode_share([sequence_time, encode_c, encode_h])
-                context_state = encode_h  # h_i
-                encode_c, encode_h = encode_share([sequence_current_time, encode_c, encode_h]) # h_(i+1)
 
-                if predicted_visit_ == 0:
-                    decode_c_generate = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
-                    decode_h_generate = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
+                encode_h_i = encode_h  # h_i
+                encode_c, encode_h_i_1 = \
+                    encode_share([sequence_current_time, encode_c, encode_h_i]) #
+                # h_(i+1)
 
-                    decode_c_reconstruction = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
-                    decode_h_reconstruction = tf.Variable(tf.zeros(shape=[batch, hidden_size]))
 
-                z_post, z_mean_post, z_log_var_post = post_net([context_state, encode_h])
-                z_prior, z_mean_prior, z_log_var_prior = prior_net(context_state)
+                z_post, z_mean_post, z_log_var_post = \
+                    post_net([encode_h_i, encode_h_i_1])
+                z_prior, z_mean_prior, z_log_var_prior = \
+                    prior_net(encode_h_i)
 
-                current_time_index_shape = tf.ones(shape=[previous_visit+predicted_visit_])
-                condition_value, likelihood = hawkes_process([input_t_train, current_time_index_shape])
-                probability_likelihood = tf.concat((probability_likelihood, tf.reshape(likelihood, [batch, -1, 1])), axis=1)
-                probability_likelihood = tf.keras.activations.softmax(probability_likelihood)
-                # generation
-                generated_next_visit, decode_c_generate, decode_h_generate = decoder_share([z_prior, context_state, sequence_last_time, decode_c_generate, decode_h_generate*condition_value])
+                # Prospa8w na katalabw ti ginetai me to previous visit. Den
+                # einai apla to starting point? Edw blepw oti to
+                # current_time_index_shape einai megalytero apo to diff
+                # previous-predicted pou 8a perimena...
+                # As ftasw mexri edw k blepw meta..
+                # TODO: make the HP returning a uniform conditional intensity
+                #  function lambda(t). This is because we do not need the
+                #  extra modeling power of the HP, since our admission
+                #  intervals are uniformly spread checkpoints.
+
+                # TODO: pythonize this mess:
+                current_time_index_shape = \
+                    tf.ones(shape=[previous_visit+predicted_visit_])
+                # TODO: pythonize this mess:
+                # TODO: does HP handle the larger input_t_train array? Yes
+                #  BUT I don't understand the way.
+                condition_value, likelihood = \
+                    hawkes_process([input_t_train, current_time_index_shape])
+                #TODO: Here likelihood is for a single time point. Is this
+                # valid? Based on the author values I should not get more
+                # than a single value?? What is going on?
+                # Why here author uses tuple instead of list as argument?
+                probability_likelihood = \
+                    tf.concat(
+                        (probability_likelihood, tf.reshape(likelihood, [batch, -1, 1])),
+                        axis=1
+                    )
+                probability_likelihood = \
+                    tf.keras.activations.softmax(probability_likelihood)
+                # TODO: for what time points are the generation and
+                #  reconstruction respectively?
+                # TODO: pythonize this mess:
+                generated_next_visit, decode_c_generate, decode_h_generate = \
+                decoder_share(
+                    [z_prior, encode_h_i, sequence_last_time, decode_c_generate, decode_h_generate*condition_value]
+                )
                 # reconstruction
-                reconstructed_next_visit, decode_c_reconstruction, decode_h_reconstruction = decoder_share([z_post, context_state, sequence_last_time, decode_c_reconstruction, decode_h_reconstruction*condition_value])
+                # TODO: pythonize this mess:
+                reconstructed_next_visit, decode_c_reconstruction,
+                decode_h_reconstruction = \
+                    decoder_share(
+                        [z_post, encode_h_i, sequence_last_time,
+                                   decode_c_reconstruction,
+                                   decode_h_reconstruction*condition_value]
+                    )
 
-                reconstructed_trajectory = tf.concat((reconstructed_trajectory, tf.reshape(reconstructed_next_visit, [batch, -1, feature_dims])), axis=1)
+                reconstructed_trajectory = \
+                    tf.concat((
+                    reconstructed_trajectory, tf.reshape(reconstructed_next_visit, [batch, -1, feature_dims])), axis=1)
+
                 generated_trajectory = tf.concat((generated_trajectory, tf.reshape(generated_next_visit, [batch, -1, feature_dims])), axis=1)
 
                 z_mean_post_all = tf.concat((z_mean_post_all, tf.reshape(z_mean_post, [batch, -1, z_dims])), axis=1)
@@ -300,12 +426,10 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
                 z_log_var_post_all = tf.concat((z_log_var_post_all, tf.reshape(z_log_var_post, [batch, -1, z_dims])), axis=1)
                 z_log_var_prior_all = tf.concat((z_log_var_prior_all, tf.reshape(z_log_var_prior, [batch, -1, z_dims])), axis=1)
 
-            d_real_pre_, d_fake_pre_ = discriminator(input_x_train, generated_trajectory)
-            d_real_pre_loss = cross_entropy(tf.ones_like(d_real_pre_), d_real_pre_)
-            d_fake_pre_loss = cross_entropy(tf.zeros_like(d_fake_pre_), d_fake_pre_)
-            d_loss = d_real_pre_loss + d_fake_pre_loss
+            # Disable discriminator as it does not provide much of
+            # performance (as by the authors). I can only use the MSE (Lr
+            # error in the paper).
 
-            gen_loss = cross_entropy(tf.ones_like(d_fake_pre_), d_fake_pre_)
             generated_mse_loss = tf.reduce_mean(
                 tf.keras.losses.mse(input_x_train[:, previous_visit:previous_visit + predicted_visit, :],
                                     generated_trajectory))
@@ -326,11 +450,8 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
 
             loss += generated_mse_loss * generated_mse_imbalance +\
                     reconstructed_mse_loss * reconstruction_mse_imbalance + \
-                    kl_loss * kl_imbalance + likelihood_loss * likelihood_imbalance \
-                    + gen_loss * generated_loss_imbalance
-
-            for weight in discriminator.trainable_variables:
-                d_loss += tf.keras.regularizers.l2(l2_regularization)(weight)
+                    kl_loss * kl_imbalance + \
+                    likelihood_loss * likelihood_imbalance
 
             variables = [var for var in encode_share.trainable_variables]
             for weight in encode_share.trainable_variables:
@@ -352,25 +473,48 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
                 loss += tf.keras.regularizers.l2(l2_regularization)(weight)
                 variables.append(weight)
 
+        '''
         for disc in range(n_disc):
             gradient_disc = disc_tape.gradient(d_loss, discriminator.trainable_variables)
             optimizer_discriminator.apply_gradients(zip(gradient_disc, discriminator.trainable_variables))
+        '''
 
         gradient_gen = gen_tape.gradient(loss, variables)
         optimizer_generation.apply_gradients(zip(gradient_gen, variables))
 
-        if train_set.epoch_completed % 1 == 0 and train_set.epoch_completed not in logged:
-            encode_share.load_weights('encode_share_3_3_mimic.h5')
-            decoder_share.load_weights('decode_share_3_3_mimic.h5')
-            discriminator.load_weights('discriminator_3_3_mimic.h5')
-            post_net.load_weights('post_net_3_3_mimic.h5')
-            prior_net.load_weights('prior_net_3_3_mimic.h5')
-            hawkes_process.load_weights('hawkes_process_3_3_mimic.h5')
+        # Why does the author loads the weights? Should he be saving them
+        # instead? Also the modulo operator is ALWAYS 0 so why is there?
+        # Also authors keep only the first batch of each epoch logged???
 
-            logged.add(train_set.epoch_completed)
+        #if train_set.epoch_completed % 1 == 0 and train_set.epoch_completed
+        # not in logged:
+        if True:
+            #encode_share.load_weights('encode_share_3_3_mimic.h5')
+            #decoder_share.load_weights('decode_share_3_3_mimic.h5')
+            #post_net.load_weights('post_net_3_3_mimic.h5')
+            #prior_net.load_weights('prior_net_3_3_mimic.h5')
+            #hawkes_process.load_weights('hawkes_process_3_3_mimic.h5')
+
+            #logged.add(train_set.epoch_completed)
             loss_pre = generated_mse_loss
 
-            mse_generated = tf.reduce_mean(tf.keras.losses.mse(input_x_train[:, previous_visit:previous_visit+predicted_visit, :], generated_trajectory))
+            mse_generated = tf.reduce_mean(
+                tf.keras.losses.mse(
+                    input_x_train[:, previous_visit:previous_visit+predicted_visit, :],
+                    generated_trajectory
+                )
+            )
+            mae_generated = tf.reduce_mean(
+                tf.keras.losses.mae(
+                    input_x_train[:, previous_visit:previous_visit+predicted_visit, :],
+                    generated_trajectory
+                )
+            )
+
+            print(f"\t\tBATCHID = {train_set.batch_completed} MSE ="
+                  f" {mse_generated}")
+            print(f"\t\tBATCHID = {train_set.batch_completed} MAE ="
+                  f" {mae_generated}")
 
             loss_diff = loss_pre - mse_generated
 
@@ -384,78 +528,86 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
             if count > 9:
                 break
 
-            input_x_test = tf.cast(test_set[:, :, 1:], tf.float32)
-            input_t_test = tf.cast(test_set[:, :, 0], tf.float32)
+            # I guess this is the equivalent of an Cross Validation.
+            #TODO: start with no CV: just report the training error and check
+            # that it reduces. Them move to CV testing as below.
+            if False:
+                input_x_test = tf.cast(test_set[:, :, 1:], tf.float32)
+                input_t_test = tf.cast(test_set[:, :, 0], tf.float32)
 
-            batch_test = test_set.shape[0]
-            generated_trajectory_test = tf.zeros(shape=[batch_test, 0, feature_dims])
-            for predicted_visit_ in range(predicted_visit):
-                for previous_visit_ in range(previous_visit):
-                    sequence_time_test = input_x_test[:, previous_visit_, :]
-                    if previous_visit_ == 0:
-                        encode_c_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                        encode_h_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+                batch_test = test_set.shape[0]
+                generated_trajectory_test = tf.zeros(shape=[batch_test, 0, feature_dims])
+                for predicted_visit_ in range(predicted_visit):
+                    for previous_visit_ in range(previous_visit):
+                        sequence_time_test = input_x_test[:, previous_visit_, :]
+                        if previous_visit_ == 0:
+                            encode_c_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+                            encode_h_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
 
-                    encode_c_test, encode_h_test = encode_share([sequence_time_test, encode_c_test, encode_h_test])
+                        encode_c_test, encode_h_test = encode_share([sequence_time_test, encode_c_test, encode_h_test])
 
-                if predicted_visit_ != 0:
-                    for i in range(predicted_visit_):
-                        encode_c_test, encode_h_test = encode_share([generated_trajectory_test[:, i, :], encode_c_test, encode_h_test])
+                    if predicted_visit_ != 0:
+                        for i in range(predicted_visit_):
+                            encode_c_test, encode_h_test = encode_share([generated_trajectory_test[:, i, :], encode_c_test, encode_h_test])
 
-                context_state_test = encode_h_test
+                    context_state_test = encode_h_test
 
-                if predicted_visit_ == 0:
-                    decode_c_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                    decode_h_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                    sequence_last_time_test = input_x_test[:, previous_visit+predicted_visit_-1, :]
+                    if predicted_visit_ == 0:
+                        decode_c_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+                        decode_h_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+                        sequence_last_time_test = input_x_test[:, previous_visit+predicted_visit_-1, :]
 
-                z_prior_test, z_mean_prior_test, z_log_var_prior_test = prior_net(context_state_test)
-                current_time_index_shape_test = tf.ones([previous_visit+predicted_visit_])
-                intensity_value_test, likelihood_test = hawkes_process([input_t_test, current_time_index_shape_test])
+                    z_prior_test, z_mean_prior_test, z_log_var_prior_test = prior_net(context_state_test)
+                    current_time_index_shape_test = tf.ones([previous_visit+predicted_visit_])
+                    intensity_value_test, likelihood_test = hawkes_process([input_t_test, current_time_index_shape_test])
 
-                generated_next_visit_test, decode_c_generate_test, decode_h_generate_test = decoder_share([z_prior_test, context_state_test, sequence_last_time_test, decode_c_generate_test, decode_h_generate_test*intensity_value_test])
-                generated_trajectory_test = tf.concat((generated_trajectory_test, tf.reshape(generated_next_visit_test, [batch_test, -1, feature_dims])), axis=1)
-                sequence_last_time_test = generated_next_visit_test
+                    generated_next_visit_test, decode_c_generate_test, decode_h_generate_test = decoder_share([z_prior_test, context_state_test, sequence_last_time_test, decode_c_generate_test, decode_h_generate_test*intensity_value_test])
+                    generated_trajectory_test = tf.concat((generated_trajectory_test, tf.reshape(generated_next_visit_test, [batch_test, -1, feature_dims])), axis=1)
+                    sequence_last_time_test = generated_next_visit_test
 
-            mse_generated_test = tf.reduce_mean(tf.keras.losses.mse(input_x_test[:, previous_visit:previous_visit+predicted_visit, :], generated_trajectory_test))
-            mae_generated_test = tf.reduce_mean(tf.keras.losses.mae(input_x_test[:, previous_visit:previous_visit+predicted_visit, :], generated_trajectory_test))
+                mse_generated_test = tf.reduce_mean(tf.keras.losses.mse(input_x_test[:, previous_visit:previous_visit+predicted_visit, :], generated_trajectory_test))
+                mae_generated_test = tf.reduce_mean(tf.keras.losses.mae(input_x_test[:, previous_visit:previous_visit+predicted_visit, :], generated_trajectory_test))
 
-            r_value_all = []
-            p_value_all = []
+                r_value_all = []
+                p_value_all = []
 
-            for r in range(predicted_visit):
-                x_ = tf.reshape(input_x_test[:, previous_visit + r, :], (-1,))
-                y_ = tf.reshape(generated_trajectory_test[:, r, :], (-1,))
-                if (y_.numpy() == np.zeros_like(y_)).all():
-                    r_value_ = [0.0, 0.0]
-                else:
-                    r_value_ = stats.pearsonr(x_, y_)
-                r_value_all.append(r_value_[0])
-                p_value_all.append(r_value_[1])
+                for r in range(predicted_visit):
+                    x_ = tf.reshape(input_x_test[:, previous_visit + r, :], (-1,))
+                    y_ = tf.reshape(generated_trajectory_test[:, r, :], (-1,))
+                    if (y_.numpy() == np.zeros_like(y_)).all():
+                        r_value_ = [0.0, 0.0]
+                    else:
+                        r_value_ = stats.pearsonr(x_, y_)
+                    r_value_all.append(r_value_[0])
+                    p_value_all.append(r_value_[1])
 
-            print('epoch ---{}---train_mse_generated---{}---likelihood_loss{}---'
-                  'train_mse_reconstruct---{}---train_kl---{}---'
-                  'test_mse---{}---test_mae---{}---'
-                  'r_value_test---{}---count---{}'.format(train_set.epoch_completed, generated_mse_loss, likelihood_loss,
-                                                          reconstructed_mse_loss, kl_loss,
-                                                          mse_generated_test, mae_generated_test,
-                                                          np.mean(r_value_all), count))
+                print('epoch ---{}---train_mse_generated---{}---likelihood_loss{}---'
+                      'train_mse_reconstruct---{}---train_kl---{}---'
+                      'test_mse---{}---test_mae---{}---'
+                      'r_value_test---{}---count---{}'.format(train_set.epoch_completed, generated_mse_loss, likelihood_loss,
+                                                              reconstructed_mse_loss, kl_loss,
+                                                              mse_generated_test, mae_generated_test,
+                                                              np.mean(r_value_all), count))
 
-            # if np.mean(r_value_all) > 0.9355:
-            #     np.savetxt('generated_trajectory_test.csv', generated_trajectory_test.numpy().reshape(-1, feature_dims), delimiter=',')
-            #     print('保存成功！')
+                # if np.mean(r_value_all) > 0.9355:
+                #     np.savetxt('generated_trajectory_test.csv', generated_trajectory_test.numpy().reshape(-1, feature_dims), delimiter=',')
+                #     print('保存成功！')
 
-            # if mse_generated_test < 0.0107:
-            #     encode_share.save_weights('encode_share_3_3_mimic.h5')
-            #     decoder_share.save_weights('decode_share_3_3_mimic.h5')
-            #     discriminator.save_weights('discriminator_3_3_mimic.h5')
-            #     post_net.save_weights('post_net_3_3_mimic.h5')
-            #     prior_net.save_weights('prior_net_3_3_mimic.h5')
-            #     hawkes_process.save_weights('hawkes_process_3_3_mimic.h5')
-            #     print('保存成功！')
+                # if mse_generated_test < 0.0107:
+                #     encode_share.save_weights('encode_share_3_3_mimic.h5')
+                #     decoder_share.save_weights('decode_share_3_3_mimic.h5')
+                #     discriminator.save_weights('discriminator_3_3_mimic.h5')
+                #     post_net.save_weights('post_net_3_3_mimic.h5')
+                #     prior_net.save_weights('prior_net_3_3_mimic.h5')
+                #     hawkes_process.save_weights('hawkes_process_3_3_mimic.h5')
+                #     print('保存成功！')
 
+
+    sys.exit(0)
     tf.compat.v1.reset_default_graph()
-    return mse_generated_test, mae_generated_test, np.mean(r_value_all)
+    #TODO: Initially do not use CV in training.
+    #return mse_generated_test, mae_generated_test, np.mean(r_value_all)
+    return mse_generated, mae_generated, 0.0
     # return -1 * mse_generated_test
 
 

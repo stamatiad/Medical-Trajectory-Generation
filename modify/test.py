@@ -25,7 +25,9 @@ class Encoder(Model):
 
     # This is driving me nuts; how could this code run in the first place
     # when the convention is __call__ instead of call? I can not run it.
-    def __call__(self, input_x):
+    # Ah, this is the way to call keras models in tf!
+    #TODO: make sure that it works now!
+    def call(self, input_x):
         # This must be a 2-d tensor [batch, features]:
         sequence_time, c, h = input_x
         # These are tensors of [batch, units]:

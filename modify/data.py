@@ -25,6 +25,8 @@ class DataSet(object):
         if start + batch_size >= self._num_examples:
             print(f"\t\EPOCH {self._epoch_completed} COMPLETED!")
             self._epoch_completed += 1
+            #Keep track on the dataset the n umber of epochs passed. Use the
+            # id to shuffle it differently each time.
             dynamic_rest_part = self._dynamic_features[start:self._num_examples]
             self._shuffle()
             self._index_in_epoch = 0
@@ -68,7 +70,6 @@ class DataSet(object):
                 self._dynamic_features,
                 index
             )
-        print("Pronto")
 
     @property
     def dynamic_features(self):

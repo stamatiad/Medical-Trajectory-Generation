@@ -5,10 +5,29 @@ import sys
 import os
 from sklearn.metrics import mean_squared_error
 from functools import wraps
+import time
 
-def generate_input_slices(input=None, previous=None, predicted=None, axis=1):
+
+def time_it(function):
+    @wraps(function)
+    def runandtime(*args, **kwargs):
+        tic = time.perf_counter()
+        result = function(*args, **kwargs)
+        toc = time.perf_counter()
+        print(f'{function.__name__} took {toc-tic} seconds.')
+        return result
+    return runandtime
+
+def generate_inputs(input=None, previous=None, predicted=None, axis=1):
     '''
     Generate starting/ending positions of q_total windows q of size q_size.
+    Previous: where to start from, global. 1 means from the first patient visit.
+    Predicted: the last (global) patient visit available to train (starting
+    idx from 1).
+
+     t is the current time (patient visit vector data). t_idx is
+     the array index, so t_idx = t-1 .
+
     :param input: The input nparray
     :param axis: The axis to slice the input data.
     :param previous: the previous (t-1) input vector time (i.e. index)
@@ -17,8 +36,9 @@ def generate_input_slices(input=None, previous=None, predicted=None, axis=1):
     '''
     # TODO: run tests to make sure that input CAN be sliced.
     # T_0 is the first time point.
-    for t in range(1, predicted):
-        yield ( input[:, t-1, :], input [:, t, :])
+    for t in range(previous, predicted):
+        yield ( input[:, t-1, :], input [:, t, :], t, t+1)
+
 
 
 def with_reproducible_rng(class_method):
@@ -37,9 +57,10 @@ def with_reproducible_rng(class_method):
     '''
     @wraps(class_method)
     def reset_rng(*args, **kwargs):
-        # this translates to self.serial_no ar runtime
-        np.random.seed(0)
-        print(f'{class_method.__name__} reseeds the RNG.')
+        # this translates to self._epoch_completed ar runtime
+        seed = args[0]._epoch_completed
+        np.random.seed(seed)
+        print(f'{class_method.__name__} reseeds the RNG with seed: {seed}.')
         return class_method(*args, **kwargs)
     return reset_rng
 

@@ -12,6 +12,11 @@ import pandas as pd
 import re
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
+import skopt
+from skopt.space import Real, Categorical, Integer
+from skopt.plots import plot_convergence, plot_objective
+from skopt import dump, load
+from skopt.callbacks import CheckpointSaver
 
 warnings.filterwarnings(action='once')
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -28,21 +33,133 @@ def unstack_to_mat(df, nfeatures):
     return arr
 
 
+def evaluate_model(params):
+    hidden_size, z_dims, learning_rate, \
+                           l2_regularization,\
+                   kl_imbalance,\
+                   reconstruction_mse_imbalance,\
+                   generated_mse_imbalance,\
+                   likelihood_imbalance,\
+                   generated_loss_imbalance = params
 
-def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generated_mse_imbalance, generated_loss_imbalance, kl_imbalance, reconstruction_mse_imbalance, likelihood_imbalance):
-    # train_set = np.load("../../Trajectory_generate/dataset_file/train_x_.npy").reshape(-1, 6, 60)
-    # test_set = np.load("../../Trajectory_generate/dataset_file/test_x.npy").reshape(-1, 6, 60)
-    # test_set = np.load("../../Trajectory_generate/dataset_file/validate_x_.npy").reshape(-1, 6, 60)
+    # Print the hyper-parameters.
+    '''
+    print('learning rate: {0:.1e}'.format(learning_rate))
+    print('num_dense_layers:', num_dense_layers)
+    print('num_dense_nodes:', num_dense_nodes)
+    print('activation:', activation)
+    print()
+    '''
 
-    # train_set = np.load('../../Trajectory_generate/dataset_file/HF_train_.npy').reshape(-1, 6, 30)
-    # test_set = np.load('../../Trajectory_generate/dataset_file/HF_validate_.npy').reshape(-1, 6, 30)
-    # test_set = np.load('../../Trajectory_generate/dataset_file/HF_test_.npy').reshape(-1, 6, 30)
+    # Create the neural network with these hyper-parameters.
 
-    #train_set = np.load("../../Trajectory_generate/dataset_file
-    # /mimic_train_x_.npy").reshape(-1, 6, 37)
-    #test_set = np.load("../../Trajectory_generate/dataset_file/mimic_test_x_
-    # .npy").reshape(-1, 6, 37)
-    # test_set = np.load("../../Trajectory_generate/dataset_file/mimic_validate_.npy").reshape(-1, 6, 37)
+    # Dir-name for the TensorBoard log-files.
+    '''
+    log_dir = log_dir_name(learning_rate, num_dense_layers,
+                           num_dense_nodes, activation)
+    '''
+
+    # Create a callback-function for Keras which will be
+    # run after each epoch has ended during training.
+    # This saves the log-files for TensorBoard.
+    # Note that there are complications when histogram_freq=1.
+    # It might give strange errors and it also does not properly
+    # support Keras data-generators for the validation-set.
+    '''
+    callback_log = TensorBoard(
+        log_dir=log_dir,
+        histogram_freq=0,
+        write_graph=True,
+        write_grads=False,
+        write_images=False)
+        '''
+
+    # Use Keras to train the model.
+    mse_all = []
+    r_value_all = []
+    mae_all = []
+
+    print(f'hidden_size---{hidden_size}---z_dims---'
+          f'{z_dims}---l2_regularization---{z_dims}'
+          f'---learning_rate---{learning_rate}--'
+          f'generated_mse_imbalance---'
+          f'{generated_mse_imbalance}---generated_loss_imbalance---'
+          f'{generated_loss_imbalance}---'
+          f'kl_imbalance---{kl_imbalance}---reconstruction_mse_imbalance---'
+          f'{reconstruction_mse_imbalance}---'
+          f'likelihood_imbalance---{likelihood_imbalance}')
+
+    if True:
+        mse, mae, r_value = train(hidden_size=hidden_size,
+                              z_dims=z_dims,
+                              learning_rate=learning_rate,
+                              l2_regularization=l2_regularization,
+                              generated_mse_imbalance=generated_mse_imbalance,
+                              generated_loss_imbalance=generated_loss_imbalance,
+                              kl_imbalance=kl_imbalance,
+                              reconstruction_mse_imbalance=reconstruction_mse_imbalance,
+                              likelihood_imbalance=likelihood_imbalance)
+
+
+    # Get the classification accuracy on the validation-set
+    # after the last training-epoch.
+
+    '''
+    mse_all.append(mse)
+    r_value_all.append(r_value)
+    mae_all.append(mae)
+    print("epoch---{}---r_value_ave  {}  mse_all_ave {}  mae_all_ave  {}  "
+          "r_value_std {}----mse_all_std  {}  mae_std {}".
+          format(i, np.mean(r_value_all), np.mean(mse_all), np.mean(mae_all),
+                 np.std(r_value_all), np.std(mse_all), np.std(mae_all)))
+                 '''
+
+
+    # Print the classification accuracy.
+    '''
+    print()
+    print("Accuracy: {0:.2%}".format(accuracy))
+    print()
+    '''
+
+    # Save the model if it improves on the best-found performance.
+    # We use the global keyword so we update the variable outside
+    # of this function.
+    best_accuracy = None
+
+    # If the classification accuracy of the saved model is improved ...
+    '''
+    if accuracy > best_accuracy:
+        # Save the new model to harddisk.
+        model.save(path_best_model)
+
+        # Update the classification accuracy.
+        best_accuracy = accuracy
+    '''
+
+    # Clear the Keras session, otherwise it will keep adding new
+    # models to the same TensorFlow graph each time we create
+    # a model with a different set of hyper-parameters.
+    # Delete the Keras model with these hyper-parameters from memory.
+    tf.compat.v1.reset_default_graph()
+
+
+    # NOTE: Scikit-optimize does minimization so it tries to
+    # find a set of hyper-parameters with the LOWEST fitness-value.
+    # Because we are interested in the HIGHEST classification
+    # accuracy, we need to negate this number so it can be minimized.
+    mse_float = mse.numpy()
+    #mse_float = np.random.rand(1,1)[0][0]*1000
+    print(f"MSE:{mse_float}")
+    return mse_float
+    # This function exactly comes from :Hvass-Labs, TensorFlow-Tutorials
+
+
+
+def train(hidden_size=None, z_dims=None, l2_regularization=None,
+          learning_rate=None, generated_mse_imbalance=None,
+          generated_loss_imbalance=None, kl_imbalance=None,
+          reconstruction_mse_imbalance=None, likelihood_imbalance=None):
 
 
     # Load (some) raw data:
@@ -163,7 +280,7 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     test_set = DataSet(test_mat)
     test_set.epoch_completed = 0
     batch_size = 64
-    epochs = 100
+    epochs = 1
 
     # Define debug global vars:
     t_len = epochs * 12
@@ -191,7 +308,7 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
 
     print(f'hidden_size---{hidden_size}---z_dims---'
           f'{z_dims}---l2_regularization---{z_dims}'
-          f'---learning_rate---{learning_rate}--n_disc---{n_disc}-'
+          f'---learning_rate---{learning_rate}--'
           f'generated_mse_imbalance---'
           f'{generated_mse_imbalance}---generated_loss_imbalance---'
           f'{generated_loss_imbalance}---'
@@ -682,18 +799,6 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
                                                           mse_generated_test, mae_generated_test,
                                                           np.mean(r_value_all), count))
 
-        # if np.mean(r_value_all) > 0.9355:
-        #     np.savetxt('generated_trajectory_test.csv', generated_trajectory_test.numpy().reshape(-1, feature_dims), delimiter=',')
-        #     print('保存成功！')
-
-        # if mse_generated_test < 0.0107:
-        #     encode_share.save_weights('encode_share_3_3_mimic.h5')
-        #     decoder_share.save_weights('decode_share_3_3_mimic.h5')
-        #     discriminator.save_weights('discriminator_3_3_mimic.h5')
-        #     post_net.save_weights('post_net_3_3_mimic.h5')
-        #     prior_net.save_weights('prior_net_3_3_mimic.h5')
-        #     hawkes_process.save_weights('hawkes_process_3_3_mimic.h5')
-        #     print('保存成功！')
 
     fig, ax = plt.subplots()
     ax.plot(mse_generated_arr.T, color='C0', label='MSE_train')
@@ -710,10 +815,8 @@ def train(hidden_size, z_dims, l2_regularization, learning_rate, n_disc, generat
     plt.close()
 
     tf.compat.v1.reset_default_graph()
-    #TODO: Initially do not use CV in training.
     #return mse_generated_test, mae_generated_test, np.mean(r_value_all)
     return mse_generated, mae_generated, 0.0
-    # return -1 * mse_generated_test
 
 
 @utils.time_it
@@ -741,29 +844,82 @@ def main():
     # BO.maximize()
     # print(BO.max)
 
-    mse_all = []
-    r_value_all = []
-    mae_all = []
-    for i in range(1):
-        mse, mae, r_value = train(hidden_size=32,
-                                  z_dims=64,
-                                  learning_rate=0.007122273166129031,
-                                  l2_regularization=8.931354194538156e-05,
-                                  n_disc=3,
-                                  generated_mse_imbalance=0.23927614146670084,
-                                  generated_loss_imbalance=0.03568210662431517,
-                                  kl_imbalance=0.00462105286455568,
-                                  reconstruction_mse_imbalance=0.003925185127256372,
-                                  likelihood_imbalance=2.3046966638597164)
-        mse_all.append(mse)
-        r_value_all.append(r_value)
-        mae_all.append(mae)
-        print("epoch---{}---r_value_ave  {}  mse_all_ave {}  mae_all_ave  {}  "
-              "r_value_std {}----mse_all_std  {}  mae_std {}".
-              format(i, np.mean(r_value_all), np.mean(mse_all), np.mean(mae_all),
-                     np.std(r_value_all), np.std(mse_all), np.std(mae_all)))
+    dimensions = [
+        hidden_size := Integer(low=4, high=64, name='hidden_size'),
+        z_dims := Integer(low=4, high=64, name='z_dims'),
+        learning_rate := Real(low=1e-6, high=1e-1, prior='log-uniform',
+                              name='learning_rate'),
+        l2_regularization := Real(low=-5, high=1, name='l2_regularization'),
+        kl_imbalance := Real(low=-6, high=1, name='kl_imbalance'),
+        reconstruction_mse_imbalance := Real(low=-6, high=1,
+                                             name='reconstruction_mse_imbalance'),
+        generated_mse_imbalance := Real(low=-6, high=1,
+                                             name='generated_mse_imbalance'),
+        likelihood_imbalance := Real(low=-6, high=3,
+                                             name='likelihood_imbalance'),
+        generated_loss_imbalance := Real(low=-6, high=1,
+                                             name='generated_loss_imbalance'),
+
+    ]
+    dim_names = [
+        "hidden_size",
+        "z_dims",
+        "learning_rate",
+        "l2_regularization",
+        "kl_imbalance",
+        "reconstruction_mse_imbalance",
+        "generated_mse_imbalance",
+        "likelihood_imbalance",
+        "generated_loss_imbalance",
+    ]
+
+    default_parameters = [32,
+                          64,
+                          0.007122273166129031,
+                          8.931354194538156e-05,
+                          0.00462105286455568,
+                          0.003925185127256372,
+                          0.23927614146670084,
+                          2.3046966638597164,
+                          0.03568210662431517,
+                          ]
+
+    x0 = default_parameters
+    y0 = None
+
+    checkpoint_saver = CheckpointSaver("checkpoint.pkl", compress=9)
+
+    if False:
+        search_result = load('checkpoint.pkl')
+        x0 = search_result.x_iters
+        y0 = search_result.func_vals
+
+    search_result = skopt.gp_minimize(
+        func=evaluate_model,
+        dimensions=dimensions,
+        acq_func='EI',  # Expected Improvement.
+        n_calls=500,
+        x0=x0,
+        y0=y0,
+        callback=[checkpoint_saver],
+        n_jobs=8
+    )
+    #dump results to continue from later on:
+    #dump(search_result, 'search_results.pkl')
+
+
+    if False:
+        plot_convergence(search_result)
+        plt.show()
+        plt.savefig('convergence_big.png')
+        plot_objective(result=search_result, dimensions=dim_names)
+        plt.show()
+        plt.savefig('all_dims_big.png', dpi=400)
+        print('PRONTO!')
+
 
 
 if __name__ == '__main__':
+    print(f'Simulation is commencing (Bayesiean hyperparameter optimization)!')
     main()
     print(f'Simulation is over!')

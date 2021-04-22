@@ -60,7 +60,7 @@ def with_reproducible_rng(class_method):
         # this translates to self._epoch_completed ar runtime
         seed = args[0]._epoch_completed
         np.random.seed(seed)
-        print(f'{class_method.__name__} reseeds the RNG with seed: {seed}.')
+        #print(f'{class_method.__name__} reseeds the RNG with seed: {seed}.')
         return class_method(*args, **kwargs)
     return reset_rng
 

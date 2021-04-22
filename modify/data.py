@@ -23,7 +23,7 @@ class DataSet(object):
         self._batch_completed += 1
         start = self._index_in_epoch
         if start + batch_size >= self._num_examples:
-            print(f"\t\EPOCH {self._epoch_completed} COMPLETED!")
+            #print(f"\t\EPOCH {self._epoch_completed} COMPLETED!")
             self._epoch_completed += 1
             #Keep track on the dataset the n umber of epochs passed. Use the
             # id to shuffle it differently each time.
@@ -51,7 +51,7 @@ class DataSet(object):
             end = self._index_in_epoch
             return self._dynamic_features[start:end]
 
-    @utils.with_reproducible_rng
+    #@utils.with_reproducible_rng
     def _shuffle(self):
         # This is so confusing! If the input is ndarray this works, but later on
         # code complains that this is not a tensor (literally the next line

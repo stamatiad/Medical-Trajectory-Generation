@@ -29,9 +29,10 @@ class ProposedModel():
         Loads and splits dataset into train/test
         '''
 
-        self.epochs = 51
+        self.epochs = 20
         self.fout_name = f"test2_e{self.epochs}"
         self.save_model = save_model
+        self.k_outer = -1
 
         # Both the numbers below are not array indices.
         # This is the starting visit that the algorithm sees. I set it to 1,
@@ -149,6 +150,19 @@ class ProposedModel():
         self.generated_loss_imbalance = 0.03568210662431517
 
 
+        # Do the K CV split of the data:
+        self.K = 3
+        #TODO: seed
+        seed = 0
+        self.K_idx = {}
+        # Do split the data based on seed:
+        idx_all = np.random.permutation(patient_no)
+        step = int(patient_no / self.K)
+        for k in range(self.K):
+            self.K_idx[k] = np.array(idx_all[k*step:(k+1)*step])
+
+
+
         # Try to visualize/white the data to get a grip:
 
         if False:
@@ -172,30 +186,29 @@ class ProposedModel():
                 plt.close()
 
 
-    def preprocessing(self, seed=0):
+    def preprocessing(self, train_idx=None, test_idx=None, inner=True):
+        '''
+        This should be called before each train (inner or outer). It
+        normalizes all the data with mu/sigma estimated from train data only!
+        :param data: the initial chunk of data (from inner or outer CV loop)
+        :return:
+        '''
 
-        # This requires df to be sorted, Why it is not?
-        # blah = data_all.loc[(slice(None), slice('Apetite_QLQ30')), :]
-
-        # Do split the data based on seed:
-        train_df_idx, test_df_idx = train_test_split(
-            self.data_all.index.levels[0], train_size=self.split[0],
-            test_size=self.split[1],
-            shuffle=False,
-            random_state=seed
-        )
-        train_df_idx, valid_df_idx = train_test_split(
-            train_df_idx,
-            test_size=self.split[2],
-            shuffle=False,
-            random_state=seed
-        )
-        self.train_df = self.data_all.loc[train_df_idx, :, :].copy()
-        self.valid_df = self.data_all.loc[valid_df_idx, :, :].copy()
-        self.test_df = self.data_all.loc[test_df_idx, :, :].copy()
+        patient_idx = self.data_all.index.unique(level=0)
+        # Save the dataframes to the correct locations, so the model knows
+        # what to do:
+        self.train_df = self.data_all.loc[patient_idx[train_idx], :, :].copy()
+        if inner:
+            # If on inner nested CV loop:
+            self.valid_df = \
+                self.data_all.loc[patient_idx[test_idx], :, :].copy()
+        else:
+            # If on outer nested CV loop:
+            self.test_df = \
+                self.data_all.loc[patient_idx[test_idx], :, :].copy()
 
 
-        # Whiten the continuous features MANUALLY:
+        # Normalize the continuous features MANUALLY:
         self.continuous_features_d = {k:(0,0) for k in self.features[15:]}
         pdidx = pd.IndexSlice
 
@@ -214,12 +227,15 @@ class ProposedModel():
             # Normalize the data:
             self.train_df.loc[pdidx[:, feature, :], :] = \
                 (self.train_df.loc[pdidx[:, feature, :], :] - mu) / std
-            self.valid_df.loc[pdidx[:, feature, :], :] = \
-                (self.valid_df.loc[pdidx[:, feature, :], :] - mu) / std
-            self.test_df.loc[pdidx[:, feature, :], :] = \
-                (self.test_df.loc[pdidx[:, feature, :], :] - mu) / std
+            if inner:
+                # If on inner nested CV loop:
+                self.valid_df.loc[pdidx[:, feature, :], :] = \
+                    (self.valid_df.loc[pdidx[:, feature, :], :] - mu) / std
+            else:
+                # If on outer nested CV loop:
+                self.test_df.loc[pdidx[:, feature, :], :] = \
+                    (self.test_df.loc[pdidx[:, feature, :], :] - mu) / std
 
-        print("BLAH")
 
 
 
@@ -232,7 +248,7 @@ class ProposedModel():
         return arr
 
 
-    def train(self, **kwargs):
+    def train(self, save_model=False, run_valid=True, **kwargs):
 
         # get training params in case we are calling train() from the optimizer:
         # This SILENTLY will replace non given optimizer parameters with
@@ -253,29 +269,29 @@ class ProposedModel():
         #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
 
         # Cast data to tensors:
-        train_mat = tf.constant(
+        train_mat_tensor = tf.constant(
             self.unstack_to_mat(self.train_df, self.feature_dims),
             dtype=tf.float16
         )
-        test_mat = tf.constant(
-            self.unstack_to_mat(self.test_df, self.feature_dims),
+        valid_mat_tensor = tf.constant(
+            self.unstack_to_mat(self.valid_df, self.feature_dims),
             dtype=tf.float16
         )
 
-        train_set = DataSet(train_mat)
+        train_set = DataSet(train_mat_tensor)
         train_set.epoch_completed = 0
-        test_set = DataSet(test_mat)
-        test_set.epoch_completed = 0
+        valid_set = DataSet(valid_mat_tensor)
+        valid_set.epoch_completed = 0
         batch_size = 128 #64
         epochs = self.epochs
 
 
         # Define debug global vars:
         t_len = epochs * 12
-        mse_generated_arr = np.zeros((1, t_len), dtype=float)
-        mae_generated_arr = np.zeros((1, t_len), dtype=float)
-        mse_generated_test_arr = np.zeros((1, t_len), dtype=float)
-        mae_generated_test_arr = np.zeros((1, t_len), dtype=float)
+        mse_generated_arr = []#np.zeros((1, t_len), dtype=float)
+        #mae_generated_arr = np.zeros((1, t_len), dtype=float)
+        mse_generated_valid_arr = []#np.zeros((1, t_len), dtype=float)
+        #mae_generated_valid_arr = np.zeros((1, t_len), dtype=float)
         train_iter = 0
 
         # hidden_size = 2**(int(hidden_size))
@@ -595,16 +611,6 @@ class ProposedModel():
                     loss += tf.keras.regularizers.l2(l2_regularization)(weight)
                     variables.append(weight)
 
-            #Save the model when epoch is completed
-            if self.save_model and train_set.epoch_completed > previous_epoch:
-                previous_epoch += 1
-
-                encode_share.save_weights('./checkpoints/encoder')
-                decoder_share.save_weights('./checkpoints/decoder')
-                post_net.save_weights('./checkpoints/post_net')
-                prior_net.save_weights('./checkpoints/prior_net')
-                hawkes_process.save_weights('./checkpoints/hawkes')
-
             gradient_gen = gen_tape.gradient(loss, variables)
             optimizer_generation.apply_gradients(zip(gradient_gen, variables))
 
@@ -643,12 +649,8 @@ class ProposedModel():
                 )
             )
 
-            #print(f"\t\tBATCHID = {train_set.batch_completed} MSE ="
-            #      f" {mse_generated}")
-            #print(f"\t\tBATCHID = {train_set.batch_completed} MAE ="
-            #      f" {mae_generated}")
-            mse_generated_arr[0, train_iter] = mse_generated
-            mae_generated_arr[0, train_iter] = mae_generated
+            mse_generated_arr.append(mse_generated.numpy())
+            #mae_generated_arr[0, train_iter] = mae_generated
 
             loss_diff = loss_pre - mse_generated
 
@@ -666,143 +668,145 @@ class ProposedModel():
             # Make validation to assess learning accuracy:
             # ======================================================================
 
-            input_x_test = test_set.next_batch(batch_size=batch_size)
-            input_t_test = tf.constant(
-                np.repeat(
-                    np.arange(
-                        self.previous_visit_idx,
-                        (self.previous_visit_idx + self.predicted_visit_idx)
-                        * 3 + 1, 3
-                    ),
-                    input_x_test.shape[0]
-                ).reshape(
-                    input_x_test.shape[0], 3, order='F'),
-                dtype=tf.float16
-            )
-            batch_test = input_x_test.shape[0]
+            if run_valid:
+                input_x_valid = valid_set.next_batch(batch_size=batch_size)
+                input_t_valid = tf.constant(
+                    np.repeat(
+                        np.arange(
+                            self.previous_visit_idx,
+                            (self.previous_visit_idx + self.predicted_visit_idx)
+                            * 3 + 1, 3
+                        ),
+                        input_x_valid.shape[0]
+                    ).reshape(
+                        input_x_valid.shape[0], 3, order='F'),
+                    dtype=tf.float16
+                )
+                batch_valid = input_x_valid.shape[0]
 
-            # Test encode/prior/decode nets on prediction for time t+1 (t_1 in the
-            # code). Again use all the available data.
-            generated_trajectory_test = tf.zeros(shape=[batch_test, 0,
-                                                        self.feature_dims])
-            for input_t, input_t_1, t, t_1 in utils.generate_inputs(
-                    input=input_x_test,
-                    previous=self.previous_visit,
-                    predicted=self.predicted_visit
-            ):
-                encode_c_test = \
-                    tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                encode_h_test = \
-                    tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                for t_idx in range(t):
-                    encode_c_test, encode_h_test = \
-                        encode_share(
-                            [input_x_test[:, t_idx, :], encode_c_test,
-                             encode_h_test]
+                # Test encode/prior/decode nets on prediction for time t+1 (t_1 in the
+                # code). Again use all the available data.
+                generated_trajectory_valid = tf.zeros(shape=[batch_valid, 0,
+                                                            self.feature_dims])
+                for input_t, input_t_1, t, t_1 in utils.generate_inputs(
+                        input=input_x_valid,
+                        previous=self.previous_visit,
+                        predicted=self.predicted_visit
+                ):
+                    encode_c_valid = \
+                        tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
+                    encode_h_valid = \
+                        tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
+                    for t_idx in range(t):
+                        encode_c_valid, encode_h_valid = \
+                            encode_share(
+                                [input_x_valid[:, t_idx, :], encode_c_valid,
+                                 encode_h_valid]
+                            )
+                    # h_i
+                    context_state_valid = encode_h_valid
+
+
+                    # Create Prior/Posterior networks:
+                    z_prior_valid, z_mean_prior_valid, z_log_var_prior_valid = \
+                        prior_net(
+                            context_state_valid
                         )
-                # h_i
-                context_state_test = encode_h_test
 
+                    # TODO: can I use something else than zero? Maybe some feature mean?
+                    decode_c_generate_valid = tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
+                    decode_h_generate_valid = tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
 
-                # Create Prior/Posterior networks:
-                z_prior_test, z_mean_prior_test, z_log_var_prior_test = \
-                    prior_net(
-                        context_state_test
+                    current_time_index_shape_valid = \
+                        tf.ones(shape=[t])
+                    intensity_value_valid, likelihood_valid = \
+                        hawkes_process([input_t_valid, current_time_index_shape_valid])
+
+                    # Generate the t+1 (t_1) patient vector:
+                    input_t_1_generated, decode_c_generate_valid, \
+                    decode_h_generate_valid = \
+                        decoder_share(
+                            [
+                                z_prior_valid,
+                                context_state_valid,
+                                input_t,
+                                decode_c_generate_valid,
+                                decode_h_generate_valid*intensity_value_valid
+                            ]
+                        )
+
+                    # Recreate the trajectory with the generated vector appended:
+                    generated_trajectory_valid = tf.concat(
+                        (
+                            generated_trajectory_valid,
+                            tf.reshape(
+                                input_t_1_generated,
+                                [batch_valid, -1, self.feature_dims]
+                            )
+                        ),
+                        axis=1
                     )
 
-                # TODO: can I use something else than zero? Maybe some feature mean?
-                decode_c_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
-                decode_h_generate_test = tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
 
-                current_time_index_shape_test = \
-                    tf.ones(shape=[t])
-                intensity_value_test, likelihood_test = \
-                    hawkes_process([input_t_test, current_time_index_shape_test])
-
-                # Generate the t+1 (t_1) patient vector:
-                input_t_1_generated, decode_c_generate_test, \
-                decode_h_generate_test = \
-                    decoder_share(
-                        [
-                            z_prior_test,
-                            context_state_test,
-                            input_t,
-                            decode_c_generate_test,
-                            decode_h_generate_test*intensity_value_test
-                        ]
+                mse_generated_valid = tf.reduce_mean(
+                    tf.keras.losses.mse(
+                        input_x_valid[:,
+                        self.previous_visit:self.previous_visit_idx
+                                            +self.predicted_visit, :],
+                        generated_trajectory_valid
                     )
-
-                # Recreate the trajectory with the generated vector appended:
-                generated_trajectory_test = tf.concat(
-                    (
-                        generated_trajectory_test,
-                        tf.reshape(
-                            input_t_1_generated,
-                            [batch_test, -1, self.feature_dims]
-                        )
-                    ),
-                    axis=1
+                )
+                mae_generated_valid = tf.reduce_mean(
+                    tf.keras.losses.mae(
+                        input_x_valid[:,
+                        self.previous_visit:self.previous_visit_idx
+                                            +self.predicted_visit, :],
+                        generated_trajectory_valid
+                    )
                 )
 
+                #print(f"\t\tBATCHID = {train_set.batch_completed} MSE_TEST ="
+                #      f" {mse_generated_test}")
+                #print(f"\t\tBATCHID = {train_set.batch_completed} MAE_TEST ="
+                #      f" {mae_generated_test}")
+                mse_generated_valid_arr.append(mse_generated_valid.numpy())
+                #mae_generated_valid_arr[0, train_iter] = mae_generated_valid
 
-            mse_generated_test = tf.reduce_mean(
-                tf.keras.losses.mse(
-                    input_x_test[:,
-                    self.previous_visit:self.previous_visit_idx
-                                        +self.predicted_visit, :],
-                    generated_trajectory_test
-                )
-            )
-            mae_generated_test = tf.reduce_mean(
-                tf.keras.losses.mae(
-                    input_x_test[:,
-                    self.previous_visit:self.previous_visit_idx
-                                        +self.predicted_visit, :],
-                    generated_trajectory_test
-                )
-            )
-
-            #print(f"\t\tBATCHID = {train_set.batch_completed} MSE_TEST ="
-            #      f" {mse_generated_test}")
-            #print(f"\t\tBATCHID = {train_set.batch_completed} MAE_TEST ="
-            #      f" {mae_generated_test}")
-            mse_generated_test_arr[0, train_iter] = mse_generated_test
-            mae_generated_test_arr[0, train_iter] = mae_generated_test
-
-
-        if False:
-            fig, ax = plt.subplots()
-            ax.plot(mse_generated_arr.T, color='C0', label='MSE_train')
-            ax.plot(mse_generated_test_arr.T, color='C1', label='MSE_valid')
-            plt.legend()
-            plt.savefig(f'Training_error_epochs_{epochs}.png')
-            plt.close()
-
-            fig, ax = plt.subplots()
-            ax.plot(mse_generated_arr.T, color='C0', label='MSE_train')
-            ax.plot(mae_generated_arr.T, color='C1', label='MAE_train')
-            plt.legend()
-            plt.savefig(f'Training_error_epochs_{epochs}.png')
-            plt.close()
-
-            fig, ax = plt.subplots()
-            ax.plot(mse_generated_test_arr.T, color='C2', label='MSE_test')
-            ax.plot(mae_generated_test_arr.T, color='C3', label='MAE_test')
-            plt.legend()
-            plt.savefig(f'Testing_error_epochs_{epochs}.png')
-            plt.close()
+        # Save the model to use it on test:
+        if save_model:
+            encode_share.save_weights(f'./checkpoints_{self.k_outer}/encoder')
+            decoder_share.save_weights(f'./checkpoints_{self.k_outer}/decoder')
+            post_net.save_weights(f'./checkpoints_{self.k_outer}/post_net')
+            prior_net.save_weights(f'./checkpoints_{self.k_outer}/prior_net')
+            hawkes_process.save_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         tf.compat.v1.reset_default_graph()
-        #return mse_generated_test, mae_generated_test, np.mean(r_value_all)
-        return mse_generated_test
+
+        if run_valid:
+            mse = mse_generated_valid
+        else:
+            mse = mse_generated
+
+        if True:
+            if run_valid:
+                fig, ax = plt.subplots()
+                ax.plot(mse_generated_arr, color='C0', label='MSE_train')
+                ax.plot(mse_generated_valid_arr, color='C1', label='MSE_valid')
+                plt.legend()
+                plt.savefig(f'Error_e_{epochs}_{mse:.5f}.png')
+                plt.close()
+
+        return mse
 
 
-    def test(self):
+    def test(self, **kwargs):
+
 
         # Params:
-        hidden_size = 64
-        z_dims = 64
+        hidden_size = kwargs.get('hidden_size', self.hidden_size)
+        z_dims = kwargs.get('z_dims', self.z_dims)
 
+        # Create the model:
         encode_share = Encoder(hidden_size=hidden_size)
         decoder_share = Decoder(
             hidden_size=hidden_size,
@@ -811,6 +815,7 @@ class ProposedModel():
         prior_net = Prior(z_dims=z_dims)
 
         hawkes_process = HawkesProcess()
+
 
         input_x_test = tf.constant(
             self.unstack_to_mat(self.test_df, self.feature_dims),
@@ -847,6 +852,14 @@ class ProposedModel():
             ),
             axis=1
         )
+
+        # load the trained weights:
+        encode_share.load_weights(f'./checkpoints_{self.k_outer}/encoder')
+        decoder_share.load_weights(f'./checkpoints_{self.k_outer}/decoder')
+        prior_net.load_weights(f'./checkpoints_{self.k_outer}/prior_net')
+        tmp = tf.ones(shape=[1])
+        hawkes_process.build([input_t_test.shape, tmp.shape])
+        hawkes_process.load_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         for t in range(1, self.predicted_visit):
 
@@ -960,38 +973,6 @@ class ProposedModel():
             'likelihood_imbalance':likelihood_imbalance
         }
 
-        # Print the hyper-parameters.
-        '''
-        print('learning rate: {0:.1e}'.format(learning_rate))
-        print('num_dense_layers:', num_dense_layers)
-        print('num_dense_nodes:', num_dense_nodes)
-        print('activation:', activation)
-        print()
-        '''
-
-        # Create the neural network with these hyper-parameters.
-
-        # Dir-name for the TensorBoard log-files.
-        '''
-        log_dir = log_dir_name(learning_rate, num_dense_layers,
-                               num_dense_nodes, activation)
-        '''
-
-        # Create a callback-function for Keras which will be
-        # run after each epoch has ended during training.
-        # This saves the log-files for TensorBoard.
-        # Note that there are complications when histogram_freq=1.
-        # It might give strange errors and it also does not properly
-        # support Keras data-generators for the validation-set.
-        '''
-        callback_log = TensorBoard(
-            log_dir=log_dir,
-            histogram_freq=0,
-            write_graph=True,
-            write_grads=False,
-            write_images=False)
-            '''
-
         # Use Keras to train the model.
         mse_all = []
         r_value_all = []
@@ -1007,60 +988,33 @@ class ProposedModel():
               f'{reconstruction_mse_imbalance}---'
               f'likelihood_imbalance---{likelihood_imbalance}')
 
-        mse = self.train(**params_d)
+        # As a nested CV we need (for this hyperparameter setting) to
+        # calculate the average score over all L (K-1 in our setting) folds.
+        mse_arr = []
+        for k_inner in range(self.K):
+            if k_inner != self.k_outer:
 
+                # Calculate inner CV indices:
+                k_train_idx = np.zeros((0,), dtype=int)
+                for k in range(self.K):
+                    if k != self.k_outer and k != k_inner:
+                        k_train_idx = np.concatenate(
+                            (k_train_idx,self.K_idx[ k])
+                        )
+                k_test_idx = self.K_idx[k_inner]
 
-        # Get the classification accuracy on the validation-set
-        # after the last training-epoch.
+                self.preprocessing(
+                    train_idx=k_train_idx,
+                    test_idx=k_test_idx,
+                )
+                mse = self.train(run_valid=True, **params_d)
+                mse_arr.append(mse.numpy())
 
-        '''
-        mse_all.append(mse)
-        r_value_all.append(r_value)
-        mae_all.append(mae)
-        print("epoch---{}---r_value_ave  {}  mse_all_ave {}  mae_all_ave  {}  "
-              "r_value_std {}----mse_all_std  {}  mae_std {}".
-              format(i, np.mean(r_value_all), np.mean(mse_all), np.mean(mae_all),
-                     np.std(r_value_all), np.std(mse_all), np.std(mae_all)))
-                     '''
-
-
-        # Print the classification accuracy.
-        '''
-        print()
-        print("Accuracy: {0:.2%}".format(accuracy))
-        print()
-        '''
-
-        # Save the model if it improves on the best-found performance.
-        # We use the global keyword so we update the variable outside
-        # of this function.
-        best_accuracy = None
-
-        # If the classification accuracy of the saved model is improved ...
-        '''
-        if accuracy > best_accuracy:
-            # Save the new model to harddisk.
-            model.save(path_best_model)
-
-            # Update the classification accuracy.
-            best_accuracy = accuracy
-        '''
-
-        # Clear the Keras session, otherwise it will keep adding new
-        # models to the same TensorFlow graph each time we create
-        # a model with a different set of hyper-parameters.
-        # Delete the Keras model with these hyper-parameters from memory.
         tf.compat.v1.reset_default_graph()
 
-
-        # NOTE: Scikit-optimize does minimization so it tries to
-        # find a set of hyper-parameters with the LOWEST fitness-value.
-        # Because we are interested in the HIGHEST classification
-        # accuracy, we need to negate this number so it can be minimized.
-        mse_float = mse.numpy()
-        #mse_float = np.random.rand(1,1)[0][0]*1000
-        print(f"MSE:{mse_float}")
-        return mse_float
+        mse_average = np.array(mse_arr).mean()
+        print(f"MSE:{mse_average}")
+        return mse_average
         # This function exactly comes from :Hvass-Labs, TensorFlow-Tutorials
 
     def hyperparameter_optimization(self):
@@ -1111,7 +1065,8 @@ class ProposedModel():
         x0 = default_parameters
         y0 = None
 
-        checkpoint_saver = CheckpointSaver(f"Checkpoint_{self.fout_name}.pkl",
+        checkpoint_saver = CheckpointSaver(f"k_{self.k_outer}_"
+                                           f"e_{self.epochs}.pkl",
                                            compress=9)
 
         if False:
@@ -1119,11 +1074,12 @@ class ProposedModel():
             x0 = search_result.x_iters
             y0 = search_result.func_vals
 
+        #TODO: to seed the RNG, so hyperparams are the same across K folds!
         search_result = skopt.gp_minimize(
             func=self.evaluate,
             dimensions=dimensions,
             acq_func='EI',  # Expected Improvement.
-            n_calls=100,
+            n_calls=50,
             x0=x0,
             y0=y0,
             callback=[checkpoint_saver],
@@ -1140,6 +1096,22 @@ class ProposedModel():
             #plt.show()
             plt.savefig(f'all_dims_{self.fout_name}.png', dpi=400)
             print('PRONTO!')
+
+        # make them a nice dict as they should be, then pass them around:
+        params_d = {
+            'hidden_size': search_result.x[0],
+            'z_dims': search_result.x[1],
+            'learning_rate': search_result.x[2],
+            'l2_regularization': search_result.x[3],
+            'kl_imbalance': search_result.x[4],
+            'reconstruction_mse_imbalance': search_result.x[5],
+            'generated_mse_imbalance': search_result.x[6],
+            'likelihood_imbalance': search_result.x[7],
+            'generated_loss_imbalance': search_result.x[8],
+        }
+
+        # Return the best hyperparameters:
+        return params_d, search_result
 
 
 
@@ -1175,9 +1147,46 @@ def main():
     # print(BO.max)
 
     model = ProposedModel(save_model=False)
-    model.preprocessing(0)
-    model.hyperparameter_optimization()
-    model.test()
+
+    # Do nested CV:
+    k_fold_scores = []
+    hyperparams_d = {}
+    for k in range(model.K):
+        model.k_outer = k
+
+        # Calculate outer CV indices:
+        k_train_idx = np.zeros((0,), dtype=int)
+        for kk in range(model.K):
+            if kk != model.k_outer:
+                k_train_idx = np.concatenate(
+                    (k_train_idx, model.K_idx[kk])
+                )
+        k_test_idx = model.K_idx[model.k_outer]
+
+        model.preprocessing(
+            train_idx=k_train_idx,
+            test_idx=k_test_idx,
+            inner=False
+        )
+        best_hyperparameters, skopt_result = model.hyperparameter_optimization()
+        hyperparams_d[k]= (best_hyperparameters, skopt_result)
+
+        # Compare best model /hypers to the test
+        model.train(
+            save_model=True,
+            run_valid=False,
+            **best_hyperparameters
+        )
+        mse_test = model.test(**best_hyperparameters)
+        k_fold_scores.append(mse_test.numpy())
+
+    # Average score over all K folds is the generalization error:
+    gen_error = np.array(k_fold_scores).mean()
+
+    print(f"Generalization ERROR: {gen_error}")
+
+    # Train the model with the best hyperparameters
+    #model.train(run_valid=False, **best_hyperparameters)
 
     if False:
         # Get optimal params

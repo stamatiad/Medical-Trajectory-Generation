@@ -24,10 +24,26 @@ from skopt.callbacks import CheckpointSaver
 
 
 class ProposedModel():
-    def __init__(self):
+    def __init__(self, save_model=True):
         '''
         Loads and splits dataset into train/test
         '''
+
+        self.epochs = 51
+        self.fout_name = f"test2_e{self.epochs}"
+        self.save_model = save_model
+
+        # Both the numbers below are not array indices.
+        # This is the starting visit that the algorithm sees. I set it to 1,
+        # since it is the first ever patient checkpoint/admission (month 0 in the
+        # dataset).
+        self.previous_visit = 1
+        self.previous_visit_idx = self.previous_visit - 1
+        # This is the future admissions that the algorithm will predict. I set it
+        # to 3 since this is the available ones that I have and I want to
+        # maximally utilize my data (corresponds to M3, M6 admissions).
+        self.predicted_visit = 3
+        self.predicted_visit_idx = self.predicted_visit - 1
 
         # Load (some) raw data:
         raw_data = pd.read_spss('BOUNCE_Dataset_m0_m3_m6_stefanos.sav')
@@ -87,12 +103,14 @@ class ProposedModel():
         self.feature_dims = len(features_arr)
 
         # TEST!! Create easy dataset to test fitting:
+        '''
         blah = np.ones(data_mat_tmp.shape, dtype=float)
         blah[:, :, 1] = 2
         blah[:, :, 2] = 3
         for feat in range(self.feature_dims):
             blah[:, feat, :] += 3 * feat
         data_mat_tmp = blah
+        '''
 
         # Now to make them Dataframe, MultiIndex compatible you need:
         data_mat = data_mat_tmp.reshape(-1, 3)
@@ -182,10 +200,6 @@ class ProposedModel():
         pdidx = pd.IndexSlice
 
 
-        # hold on: we attempt a Dataframe replace!
-        #tmp_train_df = self.train_df.copy()
-        #tmp_valid_df = self.valid_df.copy()
-        #tmp_test_df = self.test_df.copy()
         for feature in self.continuous_features_d.keys():
             # isolate features on the df:
             # Get normalization ONLY FROM TRAIN; we are not supposed to peek
@@ -205,9 +219,6 @@ class ProposedModel():
             self.test_df.loc[pdidx[:, feature, :], :] = \
                 (self.test_df.loc[pdidx[:, feature, :], :] - mu) / std
 
-        #self.train_df = tmp_train_df
-        #self.valid_df = tmp_valid_df
-        #self.test_df = tmp_test_df
         print("BLAH")
 
 
@@ -238,17 +249,6 @@ class ProposedModel():
 
 
 
-        # Both the numbers below are not array indices.
-        # This is the starting visit that the algorithm sees. I set it to 1,
-        # since it is the first ever patient checkpoint/admission (month 0 in the
-        # dataset).
-        previous_visit = 1
-        previous_visit_idx = previous_visit - 1
-        # This is the future admissions that the algorithm will predict. I set it
-        # to 3 since this is the available ones that I have and I want to
-        # maximally utilize my data (corresponds to M3, M6 admissions).
-        predicted_visit = 3
-        predicted_visit_idx = predicted_visit - 1
 
         #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
 
@@ -266,10 +266,9 @@ class ProposedModel():
         train_set.epoch_completed = 0
         test_set = DataSet(test_mat)
         test_set.epoch_completed = 0
-        batch_size = 64
-        epochs = 10
+        batch_size = 128 #64
+        epochs = self.epochs
 
-        self.fout_name = f"test_e{epochs}"
 
         # Define debug global vars:
         t_len = epochs * 12
@@ -292,8 +291,8 @@ class ProposedModel():
 
         print(f'feature_dims---{self.feature_dims}')
 
-        print(f'previous_visit---{previous_visit}---predicted_visit----'
-              f'{predicted_visit}-')
+        print(f'previous_visit---{self.previous_visit}---predicted_visit----'
+              f'{self.predicted_visit}-')
 
         print(f'hidden_size---{hidden_size}---z_dims---'
               f'{z_dims}---l2_regularization---{z_dims}'
@@ -339,6 +338,8 @@ class ProposedModel():
         max_loss = 0.001
         max_pace = 0.0001
 
+        previous_epoch = 0
+
         while train_set.epoch_completed < epochs:
             train_iter += 1
             input_train = train_set.next_batch(batch_size=batch_size)
@@ -357,8 +358,9 @@ class ProposedModel():
             input_t_train = tf.constant(
                 np.repeat(
                     np.arange(
-                        previous_visit_idx,
-                        (previous_visit_idx + predicted_visit_idx) * 3 +1 ,
+                        self.previous_visit_idx,
+                        (self.previous_visit_idx + self.predicted_visit_idx)
+                        * 3 +1 ,
                         3
                     ),
                     input_x_train.shape[0]
@@ -410,19 +412,13 @@ class ProposedModel():
                 #  limited timepoints in the dataset).
                 for input_t, input_t_1, t, t_1 in utils.generate_inputs(
                     input=input_x_train,
-                    previous=previous_visit,
-                    predicted=predicted_visit
+                    previous=self.previous_visit,
+                    predicted=self.predicted_visit
                 ):
                     # t is the current time (patient visit vector data). t_idx is
                     # the array index, so t_idx = t-1 .
 
                 #for predicted_visit_ in range(1, predicted_visit):
-                    '''
-                    sequence_last_time = \
-                        input_x_train[:, previous_visit + predicted_visit_ , :]
-                    sequence_current_time = \
-                        input_x_train[:, previous_visit+predicted_visit_ +1, :]
-                    '''
                     # Also struggling to understand:
                     # Can I write this as an single feed to LSTM?
 
@@ -437,14 +433,6 @@ class ProposedModel():
                             encode_share(
                                 [input_x_train[:, t_idx, :], encode_c, encode_h]
                             )
-                    '''
-                    for previous_visit_ in range(previous_visit+predicted_visit_):
-                        sequence_time = input_x_train[:, previous_visit_, :]
-                        # why we need to feed each one of the time slices and hot
-                        # the whole sequence?? Does not the code handles the
-                        # whole sequence?
-                        encode_c, encode_h = encode_share([sequence_time, encode_c, encode_h])
-                    '''
 
                     encode_h_i = encode_h  # h_i
                     encode_c, encode_h_i_1 = \
@@ -556,15 +544,17 @@ class ProposedModel():
                 # the average error:
                 generated_mse_loss = tf.reduce_mean(
                     tf.keras.losses.mse(
-                        input_x_train[:, previous_visit:previous_visit_idx +
-                                                         predicted_visit, :],
+                        input_x_train[:,
+                        self.previous_visit:self.previous_visit_idx +
+                                                 self.predicted_visit, :],
                         generated_trajectory
                     )
                 )
                 reconstructed_mse_loss = tf.reduce_mean(
                     tf.keras.losses.mse(
-                        input_x_train[:, previous_visit:previous_visit_idx +
-                                                        predicted_visit, :],
+                        input_x_train[:,
+                        self.previous_visit:self.previous_visit_idx +
+                                                self.predicted_visit, :],
                         reconstructed_trajectory
                     )
                 )
@@ -605,6 +595,15 @@ class ProposedModel():
                     loss += tf.keras.regularizers.l2(l2_regularization)(weight)
                     variables.append(weight)
 
+            #Save the model when epoch is completed
+            if self.save_model and train_set.epoch_completed > previous_epoch:
+                previous_epoch += 1
+
+                encode_share.save_weights('./checkpoints/encoder')
+                decoder_share.save_weights('./checkpoints/decoder')
+                post_net.save_weights('./checkpoints/post_net')
+                prior_net.save_weights('./checkpoints/prior_net')
+                hawkes_process.save_weights('./checkpoints/hawkes')
 
             gradient_gen = gen_tape.gradient(loss, variables)
             optimizer_generation.apply_gradients(zip(gradient_gen, variables))
@@ -630,14 +629,16 @@ class ProposedModel():
             mse_generated = tf.reduce_mean(
                 tf.keras.losses.mse(
                     input_x_train[:,
-                    previous_visit:previous_visit_idx+predicted_visit, :],
+                    self.previous_visit:self.previous_visit_idx
+                                        +self.predicted_visit, :],
                     generated_trajectory
                 )
             )
             mae_generated = tf.reduce_mean(
                 tf.keras.losses.mae(
                     input_x_train[:,
-                    previous_visit:previous_visit_idx+predicted_visit, :],
+                    self.previous_visit:self.previous_visit_idx
+                                    +self.predicted_visit, :],
                     generated_trajectory
                 )
             )
@@ -661,19 +662,17 @@ class ProposedModel():
             if count > 9:
                 break
 
-            # Do this has epochs?
             # ======================================================================
-            # Make testing to assess learning accuracy:
+            # Make validation to assess learning accuracy:
             # ======================================================================
-
 
             input_x_test = test_set.next_batch(batch_size=batch_size)
             input_t_test = tf.constant(
                 np.repeat(
                     np.arange(
-                        previous_visit_idx,
-                        (previous_visit_idx + predicted_visit_idx) * 3 + 1,
-                        3
+                        self.previous_visit_idx,
+                        (self.previous_visit_idx + self.predicted_visit_idx)
+                        * 3 + 1, 3
                     ),
                     input_x_test.shape[0]
                 ).reshape(
@@ -688,8 +687,8 @@ class ProposedModel():
                                                         self.feature_dims])
             for input_t, input_t_1, t, t_1 in utils.generate_inputs(
                     input=input_x_test,
-                    previous=previous_visit,
-                    predicted=predicted_visit
+                    previous=self.previous_visit,
+                    predicted=self.predicted_visit
             ):
                 encode_c_test = \
                     tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
@@ -749,14 +748,16 @@ class ProposedModel():
             mse_generated_test = tf.reduce_mean(
                 tf.keras.losses.mse(
                     input_x_test[:,
-                    previous_visit:previous_visit_idx+predicted_visit, :],
+                    self.previous_visit:self.previous_visit_idx
+                                        +self.predicted_visit, :],
                     generated_trajectory_test
                 )
             )
             mae_generated_test = tf.reduce_mean(
                 tf.keras.losses.mae(
                     input_x_test[:,
-                    previous_visit:previous_visit_idx+predicted_visit, :],
+                    self.previous_visit:self.previous_visit_idx
+                                        +self.predicted_visit, :],
                     generated_trajectory_test
                 )
             )
@@ -768,31 +769,15 @@ class ProposedModel():
             mse_generated_test_arr[0, train_iter] = mse_generated_test
             mae_generated_test_arr[0, train_iter] = mae_generated_test
 
-            # What is that?
-            if False:
-                r_value_all = []
-                p_value_all = []
-
-                for r in range(predicted_visit):
-                    x_ = tf.reshape(input_x_test[:, previous_visit_idx + r, :], (-1,))
-                    y_ = tf.reshape(generated_trajectory_test[:, r, :], (-1,))
-                    if (y_.numpy() == np.zeros_like(y_)).all():
-                        r_value_ = [0.0, 0.0]
-                    else:
-                        r_value_ = stats.pearsonr(x_, y_)
-                    r_value_all.append(r_value_[0])
-                    p_value_all.append(r_value_[1])
-
-                print('epoch ---{}---train_mse_generated---{}---likelihood_loss{}---'
-                      'train_mse_reconstruct---{}---train_kl---{}---'
-                      'test_mse---{}---test_mae---{}---'
-                      'r_value_test---{}---count---{}'.format(train_set.epoch_completed, generated_mse_loss, likelihood_loss,
-                                                              reconstructed_mse_loss, kl_loss,
-                                                              mse_generated_test, mae_generated_test,
-                                                              np.mean(r_value_all), count))
-
 
         if False:
+            fig, ax = plt.subplots()
+            ax.plot(mse_generated_arr.T, color='C0', label='MSE_train')
+            ax.plot(mse_generated_test_arr.T, color='C1', label='MSE_valid')
+            plt.legend()
+            plt.savefig(f'Training_error_epochs_{epochs}.png')
+            plt.close()
+
             fig, ax = plt.subplots()
             ax.plot(mse_generated_arr.T, color='C0', label='MSE_train')
             ax.plot(mae_generated_arr.T, color='C1', label='MAE_train')
@@ -809,7 +794,140 @@ class ProposedModel():
 
         tf.compat.v1.reset_default_graph()
         #return mse_generated_test, mae_generated_test, np.mean(r_value_all)
-        return mse_generated, mae_generated, 0.0
+        return mse_generated_test
+
+
+    def test(self):
+
+        # Params:
+        hidden_size = 64
+        z_dims = 64
+
+        encode_share = Encoder(hidden_size=hidden_size)
+        decoder_share = Decoder(
+            hidden_size=hidden_size,
+            feature_dims=self.feature_dims
+        )
+        prior_net = Prior(z_dims=z_dims)
+
+        hawkes_process = HawkesProcess()
+
+        input_x_test = tf.constant(
+            self.unstack_to_mat(self.test_df, self.feature_dims),
+            dtype=tf.float32
+        )
+
+        input_t_test = tf.constant(
+            np.repeat(
+                np.arange(
+                    self.previous_visit_idx,
+                    (self.previous_visit_idx + self.predicted_visit_idx) * 3
+                    + 1,
+                    3
+                ),
+                input_x_test.shape[0]
+            ).reshape(
+                input_x_test.shape[0], 3, order='F'),
+            dtype=tf.float16
+        )
+        batch_test = input_x_test.shape[0]
+
+        # Test encode/prior/decode nets on prediction for time t+1 (t_1 in the
+        # code). Again use all the available data.
+        generated_trajectory_test = tf.zeros(shape=[batch_test, 0, self.feature_dims],
+                                dtype=tf.float32)
+        # Use the first only timepoint to predict the rest HARDCODED MANUALLY:
+        generated_trajectory_test = tf.concat(
+            (
+                generated_trajectory_test,
+                tf.reshape(
+                    input_x_test[:, 0, :],
+                    [batch_test, -1, self.feature_dims]
+                )
+            ),
+            axis=1
+        )
+
+        for t in range(1, self.predicted_visit):
+
+            encode_c_test = \
+                tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+            encode_h_test = \
+                tf.Variable(tf.zeros(shape=[batch_test, hidden_size]))
+            for t_idx in range(t):
+                encode_c_test, encode_h_test = \
+                    encode_share(
+                        [generated_trajectory_test[:, t_idx, :], encode_c_test,
+                         encode_h_test]
+                    )
+
+            # h_(i)
+            context_state_test = encode_h_test
+
+            # Create Prior/Posterior networks:
+            z_prior_test, z_mean_prior_test, z_log_var_prior_test = \
+                prior_net(
+                    context_state_test
+                )
+
+            # TODO: can I use something else than zero? Maybe some feature mean?
+            decode_c_generate_test = tf.Variable(
+                tf.zeros(shape=[batch_test, hidden_size]))
+            decode_h_generate_test = tf.Variable(
+                tf.zeros(shape=[batch_test, hidden_size]))
+
+            current_time_index_shape_test = \
+                tf.ones(shape=[t])
+            intensity_value_test, likelihood_test = \
+                hawkes_process([input_t_test, current_time_index_shape_test])
+
+            # Generate the t+1 (t_1) patient vector:
+            input_t_1_generated, decode_c_generate_test, \
+            decode_h_generate_test = \
+                decoder_share(
+                    [
+                        z_prior_test,
+                        context_state_test,
+                        input_x_test[:, t, :],
+                        decode_c_generate_test,
+                        decode_h_generate_test * intensity_value_test
+                    ]
+                )
+
+            # Recreate the trajectory with the generated vector appended:
+            generated_trajectory_test = tf.concat(
+                (
+                    generated_trajectory_test,
+                    tf.reshape(
+                        input_t_1_generated,
+                        [batch_test, -1, self.feature_dims]
+                    )
+                ),
+                axis=1
+            )
+
+        mse_generated_test = tf.reduce_mean(
+            tf.keras.losses.mse(
+                input_x_test,
+                generated_trajectory_test
+            )
+        )
+
+        '''
+        r_value_all = []
+        p_value_all = []
+
+        for r in range(predicted_visit):
+            x_ = tf.reshape(input_x_test[:, previous_visit + r, :], (-1,))
+            y_ = tf.reshape(generated_trajectory_test[:, r, :], (-1,))
+            r_value_ = stats.pearsonr(x_, y_)
+            r_value_all.append(r_value_[0])
+            p_value_all.append(r_value_[1])
+        '''
+
+        return mse_generated_test #, np.mean(r_value_all)
+
+
 
     def evaluate(self, params):
         '''
@@ -889,8 +1007,7 @@ class ProposedModel():
               f'{reconstruction_mse_imbalance}---'
               f'likelihood_imbalance---{likelihood_imbalance}')
 
-        if True:
-            mse, mae, r_value = self.train(**params_d)
+        mse = self.train(**params_d)
 
 
         # Get the classification accuracy on the validation-set
@@ -994,10 +1111,11 @@ class ProposedModel():
         x0 = default_parameters
         y0 = None
 
-        checkpoint_saver = CheckpointSaver("checkpoint_test.pkl", compress=9)
+        checkpoint_saver = CheckpointSaver(f"Checkpoint_{self.fout_name}.pkl",
+                                           compress=9)
 
         if False:
-            search_result = load(f'{self.fout_name}.pkl')
+            search_result = load(f'Checkpoint_{self.fout_name}.pkl')
             x0 = search_result.x_iters
             y0 = search_result.func_vals
 
@@ -1005,7 +1123,7 @@ class ProposedModel():
             func=self.evaluate,
             dimensions=dimensions,
             acq_func='EI',  # Expected Improvement.
-            n_calls=11,
+            n_calls=100,
             x0=x0,
             y0=y0,
             callback=[checkpoint_saver],
@@ -1017,7 +1135,7 @@ class ProposedModel():
         if False:
             plot_convergence(search_result)
             #plt.show()
-            plt.savefig(f'{self.fout_name}.png')
+            plt.savefig(f'convergence_{self.fout_name}.png')
             plot_objective(result=search_result, dimensions=dim_names)
             #plt.show()
             plt.savefig(f'all_dims_{self.fout_name}.png', dpi=400)
@@ -1056,11 +1174,12 @@ def main():
     # BO.maximize()
     # print(BO.max)
 
-    model = ProposedModel()
+    model = ProposedModel(save_model=False)
     model.preprocessing(0)
-    #model.hyperparameter_optimization()
+    model.hyperparameter_optimization()
+    model.test()
 
-    if True:
+    if False:
         # Get optimal params
         #search_result = load(f'{model.fout_name}.pkl')
         search_result = load(f'checkpoint_test.pkl')

@@ -18,18 +18,14 @@ from skopt.plots import plot_convergence, plot_objective
 from skopt import dump, load
 from skopt.callbacks import CheckpointSaver
 
-
-
-
-
+Debug = False
 
 class ProposedModel():
     def __init__(self, save_model=True):
-        '''
-        Loads and splits dataset into train/test
+        ''' Loads and splits dataset into train/test
         '''
 
-        self.epochs = 100
+        self.epochs = 30
         self.fout_name = f"test2_e{self.epochs}"
         self.save_model = save_model
         self.k_outer = -1
@@ -87,7 +83,7 @@ class ProposedModel():
                 vals, ordinal_vals = \
                     np.unique(previous_vals, return_inverse=True)
                 replace_d = {**dict(zip(vals[ordinal_vals], ordinal_vals)),
-                    **{np.nan: -1}}
+                    **{np.nan: np.nan}}
                 data_tmp[col].replace(replace_d, inplace=True)
 
         # Whiten the continuous features MANUALLY:
@@ -128,8 +124,10 @@ class ProposedModel():
                                 columns=timepoints_d.values())
 
         # Fill the NaN values with a value that does not appear naturally in the
-        # input to signify a missing value (Can I do this?).
-        self.data_all.fillna(-1, inplace=True)
+        # input to signify a missing value.
+        # UPDATE: do not! You already replaced nan vals for categorical vars.
+        # Let the continuous vars preprocessing handle these.
+        #self.data_all.fillna(-1, inplace=True)
 
         # Divide to train/test set: (basic up to this phase):
         # Do this with sklearn:
@@ -139,15 +137,17 @@ class ProposedModel():
         # blah = data_all.loc[(slice(None), slice('Apetite_QLQ30')), :]
 
         # Initialize defalut model parameters (from the original paper):
-        self.hidden_size = 32
-        self.z_dims = 64
+        self.hidden_size = 8 #32
+        self.z_dims = 8 #64
         self.learning_rate = 0.007122273166129031
         self.l2_regularization = 8.931354194538156e-05
-        self.kl_imbalance = 0.00462105286455568
-        self.reconstruction_mse_imbalance = 0.003925185127256372
-        self.generated_mse_imbalance = 0.23927614146670084
-        self.likelihood_imbalance = 2.3046966638597164
-        self.generated_loss_imbalance = 0.03568210662431517
+        #self.kl_imbalance = 0.00462105286455568
+        self.reconstruction_mse_imbalance = 0.5
+        self.generated_mse_imbalance = 0.5
+        #self.reconstruction_mse_imbalance = 0.003925185127256372
+        #self.generated_mse_imbalance = 0.23927614146670084
+        #self.likelihood_imbalance = 2.3046966638597164
+        #self.generated_loss_imbalance = 0.03568210662431517
 
 
         # Do the K CV split of the data:
@@ -194,18 +194,59 @@ class ProposedModel():
         :return:
         '''
 
+
+        # DO NOT PEEK INTO THE FUTURE. First get only your assigned as
+        # training data points.
         patient_idx = self.data_all.index.unique(level=0)
+
+        train_df_tmp = self.data_all.loc[patient_idx[train_idx], :, :].copy()
+
+        # =======================================================================
+        # Missing values imputation.
+        # =======================================================================
+
+        # Get first level idx (different patients):
+        # mi = self.data_all.index.levels[0]
+        train_all_idx = train_df_tmp.index.unique(level=0)
+        non_missing_idx = np.zeros((len(train_all_idx),), dtype=bool)
+        for idx, patient in enumerate(train_all_idx):
+            non_missing_idx[idx] = not train_df_tmp.loc[patient].isnull(
+            ).values.any()
+
+        self.train_df = train_df_tmp.loc[train_all_idx[non_missing_idx], :,
+                        :].copy()
+
+        # Get validation/test data points
+        test_df_tmp = self.data_all.loc[patient_idx[test_idx], :, :].copy()
+
+        # Remove patients with missing time points (who have missed entire
+        # exam check points.
+        test_all_idx = test_df_tmp.index.unique(level=0)
+        non_missing_idx = np.zeros((len(test_all_idx),), dtype=bool)
+        for idx, patient in enumerate(test_all_idx):
+            tmp = test_df_tmp.loc[patient].isnull().values
+            # Locate missing columns (checkpoints):
+            non_missing_idx[idx] = np.logical_not(np.all(tmp, axis=0)).all()
+
+        # Fill in any individual missing values using the kNN model:
+        test_df_tmp = test_df_tmp.loc[test_all_idx[non_missing_idx]].copy()
+
+        # TODO: I need a custom kNN that takes neighbors only from the same
+        # checkpoint and not some future one.
+
+        test_df_tmp.fillna(-1, inplace=True)
+
+
         # Save the dataframes to the correct locations, so the model knows
         # what to do:
-        self.train_df = self.data_all.loc[patient_idx[train_idx], :, :].copy()
         if inner:
             # If on inner nested CV loop:
             self.valid_df = \
-                self.data_all.loc[patient_idx[test_idx], :, :].copy()
+                test_df_tmp.loc[test_all_idx[non_missing_idx], :, :].copy()
         else:
             # If on outer nested CV loop:
             self.test_df = \
-                self.data_all.loc[patient_idx[test_idx], :, :].copy()
+                test_df_tmp.loc[test_all_idx[non_missing_idx], :, :].copy()
 
 
         # Normalize the continuous features MANUALLY:
@@ -236,6 +277,15 @@ class ProposedModel():
                 self.test_df.loc[pdidx[:, feature, :], :] = \
                     (self.test_df.loc[pdidx[:, feature, :], :] - mu) / std
 
+        # =======================================================================
+        # Missing values imputation.
+        # =======================================================================
+
+        # Here I should use the train_df to create a kNN model and fill in
+        # the missing values in validation/test data points.
+
+        #print('done')
+
 
 
 
@@ -259,12 +309,9 @@ class ProposedModel():
         l2_regularization = kwargs.get('l2_regularization', self.l2_regularization)
         learning_rate = kwargs.get('learning_rate', self.learning_rate)
         generated_mse_imbalance = kwargs.get('generated_mse_imbalance', self.generated_mse_imbalance)
-        generated_loss_imbalance = kwargs.get('generated_loss_imbalance', self.generated_loss_imbalance)
-        kl_imbalance = kwargs.get('kl_imbalance', self.kl_imbalance)
         reconstruction_mse_imbalance = kwargs.get('reconstruction_mse_imbalance', self.reconstruction_mse_imbalance)
-        likelihood_imbalance = kwargs.get('likelihood_imbalance', self.likelihood_imbalance)
 
-        batch_size = 256 #64
+        batch_size = 64
         epochs = self.epochs
 
         #m, n = len(df.index.levels[-1]), len(df.index.levels[1])
@@ -272,27 +319,28 @@ class ProposedModel():
         # Cast data to tensors:
         train_mat_tensor = tf.constant(
             self.unstack_to_mat(self.train_df, self.feature_dims),
-            dtype=tf.float16
+            dtype=tf.float32
         )
         valid_mat_tensor = tf.constant(
             self.unstack_to_mat(self.valid_df, self.feature_dims),
-            dtype=tf.float16
+            dtype=tf.float32
         )
 
         train_set = DataSet(train_mat_tensor, batch_size=batch_size)
-        train_set.epoch_completed = 0
         valid_set = DataSet(valid_mat_tensor, batch_size=batch_size)
-        valid_set.epoch_completed = 0
 
 
         # Define debug global vars:
-        t_len = epochs * 12
-        epochs_loss_arr = []#np.zeros((1, t_len), dtype=float)
-        #epochs_loss_arr = tf.TensorArray(dtype=tf.int32, size=0,
-        # dynamic_size=True)
-
+        epochs_loss_arr = tf.TensorArray(
+            dtype=tf.float32, size=0,
+            dynamic_size=True, clear_after_read=False)
+        epochs_loss_only_arr = tf.TensorArray(
+            dtype=tf.float32, size=0,
+            dynamic_size=True, clear_after_read=False)
         #mae_generated_arr = np.zeros((1, t_len), dtype=float)
-        epochs_val_loss_arr = []#np.zeros((1, t_len), dtype=float)
+        epochs_val_loss_arr = tf.TensorArray(
+            dtype=tf.float32, size=0,
+            dynamic_size=True, clear_after_read=False)
         #mae_generated_valid_arr = np.zeros((1, t_len), dtype=float)
         train_iter = 0
 
@@ -307,20 +355,14 @@ class ProposedModel():
         # reconstruction_mse_imbalance = 10 ** reconstruction_mse_imbalance
         # likelihood_imbalance = 10 ** likelihood_imbalance
 
-        print(f'feature_dims---{self.feature_dims}')
 
-        print(f'previous_visit---{self.previous_visit}---predicted_visit----'
-              f'{self.predicted_visit}-')
-
-        print(f'hidden_size---{hidden_size}---z_dims---'
-              f'{z_dims}---l2_regularization---{z_dims}'
-              f'---learning_rate---{learning_rate}--'
-              f'generated_mse_imbalance---'
-              f'{generated_mse_imbalance}---generated_loss_imbalance---'
-              f'{generated_loss_imbalance}---'
-              f'kl_imbalance---{kl_imbalance}---reconstruction_mse_imbalance---'
-              f'{reconstruction_mse_imbalance}---'
-              f'likelihood_imbalance---{likelihood_imbalance}')
+        print(f'hidden_size---{hidden_size}---'
+              f'z_dims---{z_dims}---'
+              f'l2_regularization---{l2_regularization}---'
+              f'learning_rate---{learning_rate}--'
+              f'generated_mse_imbalance---{generated_mse_imbalance}---'
+              f'reconstruction_mse_imbalance---{reconstruction_mse_imbalance}---'
+              )
 
         encode_share = Encoder(
             hidden_size=hidden_size
@@ -337,27 +379,13 @@ class ProposedModel():
             z_dims=z_dims
         )
 
-        #hawkes_process = HawkesProcess()
-
-
-        count = 0
         optimizer_generation = tf.keras.optimizers.RMSprop(
             learning_rate=learning_rate
         )
-        optimizer_discriminator = tf.keras.optimizers.RMSprop(
-            learning_rate=learning_rate
-        )
-        cross_entropy = tf.keras.losses.BinaryCrossentropy(
-            from_logits=True
-        )
-
-        logged = set()
-        max_loss = 0.001
-        max_pace = 0.0001
-
 
         for epoch in range(epochs):
             epoch_loss = 0
+            epoch_loss_only = 0
             for train_batch in train_set.next_batch():
                 batch_loss = 0
 
@@ -371,20 +399,7 @@ class ProposedModel():
                 # This input_t_train should be the times of admissions. Should be:
                 # batch_size x times of admissions.
                 #input_t_train = tf.cast(input_train[:, 0, :], tf.float32)
-                #TODO: make sure it works after changes in prev/pred:
-                input_t_train = tf.constant(
-                    np.repeat(
-                        np.arange(
-                            self.previous_visit_idx,
-                            (self.previous_visit_idx + self.predicted_visit_idx)
-                            * 3 +1 ,
-                            3
-                        ),
-                        train_batch.shape[0]
-                    ).reshape(
-                    train_batch.shape[0], 3, order='F'),
-                    dtype=tf.float16
-                )
+
                 batch = train_batch.shape[0]
 
                 with tf.GradientTape() as gen_tape:
@@ -393,10 +408,7 @@ class ProposedModel():
                     #probability_likelihood = tf.zeros(shape=[batch, 0, 1])
                     reconstructed_trajectory = tf.zeros(shape=[batch, 0,
                                                                self.feature_dims])
-                    z_mean_post_all = tf.zeros(shape=[batch, 0, z_dims])
-                    z_log_var_post_all = tf.zeros(shape=[batch, 0, z_dims])
-                    z_mean_prior_all = tf.zeros(shape=[batch, 0, z_dims])
-                    z_log_var_prior_all = tf.zeros(shape=[batch, 0, z_dims])
+
                     # Multiple things I do not understand:
                     # 1. If the user put unexpected values this loop will be skipped
                     # altogether, so the generator should fail?
@@ -480,10 +492,10 @@ class ProposedModel():
                         #  extra modeling power of the HP, since our admission
                         #  intervals are uniformly spread checkpoints.
 
+                        '''
                         current_time_index_shape = \
                             tf.ones(shape=[t])
 
-                        '''
                         # TODO: does HP handle the larger input_t_train array? Yes
                         #  BUT I don't understand the way.
                         condition_value, likelihood = \
@@ -545,11 +557,13 @@ class ProposedModel():
                             ), axis=1
                         )
 
+                        '''
                         z_mean_post_all = tf.concat((z_mean_post_all, tf.reshape(z_mean_post, [batch, -1, z_dims])), axis=1)
                         z_mean_prior_all = tf.concat((z_mean_prior_all, tf.reshape(z_mean_prior, [batch, -1, z_dims])), axis=1)
 
                         z_log_var_post_all = tf.concat((z_log_var_post_all, tf.reshape(z_log_var_post, [batch, -1, z_dims])), axis=1)
                         z_log_var_prior_all = tf.concat((z_log_var_prior_all, tf.reshape(z_log_var_prior, [batch, -1, z_dims])), axis=1)
+                        '''
 
                     # Disable discriminator as it does not provide much of
                     # performance (as by the authors). I can only use the MSE (Lr
@@ -598,6 +612,10 @@ class ProposedModel():
                             #kl_loss * kl_imbalance #+ \
                             #likelihood_loss * likelihood_imbalance
 
+                    # Keep track of loss without regularization (to be
+                    # comparable with validation loss):
+                    batch_loss_only = batch_loss
+
                     variables = [var for var in encode_share.trainable_variables]
                     for weight in encode_share.trainable_variables:
                         batch_loss += tf.keras.regularizers.l2(l2_regularization)(weight)
@@ -621,9 +639,12 @@ class ProposedModel():
                     '''
 
                 epoch_loss += batch_loss
-                print(f"Batch completed {train_set.batch_completed}. Epoch "
-                      f"completed {train_set.epoch_completed}. Batch loss:"
-                      f" {batch_loss}. Epoch loss: {epoch_loss}.")
+                epoch_loss_only += batch_loss_only
+
+                if Debug:
+                    print(f"Batch completed {train_set.batch_completed}. Epoch "
+                          f"completed {train_set.epoch_completed}. Batch loss:"
+                          f" {batch_loss}. Epoch loss: {epoch_loss}.")
 
                 # Perform backpropagation with batch_loss
                 gradient_gen = gen_tape.gradient(batch_loss, variables)
@@ -645,7 +666,6 @@ class ProposedModel():
                 #hawkes_process.load_weights('hawkes_process_3_3_mimic.h5')
 
                 #logged.add(train_set.epoch_completed)
-                loss_pre = generated_mse_loss
 
                 mse_generated = tf.reduce_mean(
                     tf.keras.losses.mse(
@@ -655,29 +675,9 @@ class ProposedModel():
                         generated_trajectory
                     )
                 )
-                mae_generated = tf.reduce_mean(
-                    tf.keras.losses.mae(
-                        train_batch[:,
-                        self.previous_visit:self.previous_visit_idx
-                                        +self.predicted_visit, :],
-                        generated_trajectory
-                    )
-                )
 
                 #mse_generated_arr.append(mse_generated.numpy())
                 #mae_generated_arr[0, train_iter] = mae_generated
-
-                loss_diff = loss_pre - mse_generated
-
-                if mse_generated > max_loss:
-                    count = 0
-                else:
-                    if loss_diff > max_pace:
-                        count = 0
-                    else:
-                        count += 1
-                if count > 9:
-                    break
 
                 # ======================================================================
                 # Training batch finishes
@@ -686,6 +686,17 @@ class ProposedModel():
             # ======================================================================
             # Training epoch finishes
             # ======================================================================
+            # This is the training loss for a whole epoch.
+            if Debug:
+                print(f"\t\tTraining loss: "
+                  f"{epoch_loss / train_set._total_batches_no}.")
+            # Epoch completed:
+            epochs_loss_arr = \
+                epochs_loss_arr.write(epoch, epoch_loss / \
+                                                    train_set._total_batches_no)
+            epochs_loss_only_arr = \
+                epochs_loss_only_arr.write(epoch, epoch_loss_only /
+                                                    train_set._total_batches_no)
 
             # ======================================================================
             # Make validation to assess learning accuracy:
@@ -694,24 +705,14 @@ class ProposedModel():
             if run_valid:
                 valid_loss = 0
                 for valid_batch in valid_set.next_batch():
-                    input_t_valid = tf.constant(
-                        np.repeat(
-                            np.arange(
-                                self.previous_visit_idx,
-                                (self.previous_visit_idx + self.predicted_visit_idx)
-                                * 3 + 1, 3
-                            ),
-                            valid_batch.shape[0]
-                        ).reshape(
-                            valid_batch.shape[0], 3, order='F'),
-                        dtype=tf.float16
-                    )
                     batch_valid = valid_batch.shape[0]
 
                     # Test encode/prior/decode nets on prediction for time t+1 (t_1 in the
                     # code). Again use all the available data.
-                    generated_trajectory_valid = tf.zeros(shape=[batch_valid, 0,
-                                                                self.feature_dims])
+                    generated_trajectory_valid = \
+                        tf.zeros(shape=[batch_valid, 0, self.feature_dims],
+                                 dtype=tf.float32)
+
                     for input_t, input_t_1, t, t_1 in utils.generate_inputs(
                             input=valid_batch,
                             previous=self.previous_visit,
@@ -777,16 +778,8 @@ class ProposedModel():
                     mse_generated_valid = tf.reduce_mean(
                         tf.keras.losses.mse(
                             valid_batch[:,
-                            self.previous_visit:self.previous_visit_idx
-                                                +self.predicted_visit, :],
-                            generated_trajectory_valid
-                        )
-                    )
-                    mae_generated_valid = tf.reduce_mean(
-                        tf.keras.losses.mae(
-                            valid_batch[:,
-                            self.previous_visit:self.previous_visit_idx
-                                                +self.predicted_visit, :],
+                            self.previous_visit:self.previous_visit_idx +
+                                                self.predicted_visit, :],
                             generated_trajectory_valid
                         )
                     )
@@ -800,14 +793,18 @@ class ProposedModel():
                     # Gather validation across all batches:
                     valid_loss += mse_generated_valid
 
-                print(f"\t\tValidation loss: {valid_loss}.")
+                # This is the validation loss for a whole epoch.
+                if Debug:
+                    print(f"\t\tValidation loss: "
+                          f"{valid_loss / valid_set._total_batches_no}.")
 
-                epochs_val_loss_arr.append(valid_loss.numpy() /
+                epochs_val_loss_arr = epochs_val_loss_arr.write(epoch,
+                                                              valid_loss / \
                                                valid_set._total_batches_no)
 
-            # Epoch completed:
-            epochs_loss_arr.append(epoch_loss.numpy() /
-                                   train_set._total_batches_no)
+            # ======================================================================
+            # Validation epoch finishes
+            # ======================================================================
 
         # Save the model to use it on test:
         '''
@@ -819,25 +816,27 @@ class ProposedModel():
             #hawkes_process.save_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         tf.compat.v1.reset_default_graph()
+        '''
 
         if run_valid:
-            mse = mse_generated_valid
+            loss = epochs_val_loss_arr.stack().numpy()[-1]
         else:
-            mse = mse_generated
-        '''
-        mse = 0
+            loss = epochs_loss_arr.stack().numpy()[-1]
 
         if True:
             if run_valid:
                 fig, ax = plt.subplots()
-                ax.plot(epochs_loss_arr, color='C0', label='MSE_train')
-                ax.plot(epochs_val_loss_arr, color='C1', label='MSE_valid')
+                ax.plot(epochs_loss_arr.stack().numpy(), color='C0',
+                        label='MSE_train')
+                ax.plot(epochs_loss_only_arr.stack().numpy(), color='C1',
+                        label='MSE_train_noreg')
+                ax.plot(epochs_val_loss_arr.stack().numpy(), color='C2',
+                        label='MSE_valid')
                 plt.legend()
-                plt.savefig(f'Error_e_{epochs}_{mse:.5f}.png')
+                plt.savefig(f'Error_e_{epochs}_{loss:.5f}.png')
                 plt.close()
 
-        sys.exit(0)
-        return mse
+        return loss
 
 
     def test(self, **kwargs):
@@ -855,7 +854,7 @@ class ProposedModel():
         )
         prior_net = Prior(z_dims=z_dims)
 
-        hawkes_process = HawkesProcess()
+        #hawkes_process = HawkesProcess()
 
 
         input_x_test = tf.constant(
@@ -863,19 +862,6 @@ class ProposedModel():
             dtype=tf.float32
         )
 
-        input_t_test = tf.constant(
-            np.repeat(
-                np.arange(
-                    self.previous_visit_idx,
-                    (self.previous_visit_idx + self.predicted_visit_idx) * 3
-                    + 1,
-                    3
-                ),
-                input_x_test.shape[0]
-            ).reshape(
-                input_x_test.shape[0], 3, order='F'),
-            dtype=tf.float16
-        )
         batch_test = input_x_test.shape[0]
 
         # Test encode/prior/decode nets on prediction for time t+1 (t_1 in the
@@ -898,9 +884,9 @@ class ProposedModel():
         encode_share.load_weights(f'./checkpoints_{self.k_outer}/encoder')
         decoder_share.load_weights(f'./checkpoints_{self.k_outer}/decoder')
         prior_net.load_weights(f'./checkpoints_{self.k_outer}/prior_net')
-        tmp = tf.ones(shape=[1])
-        hawkes_process.build([input_t_test.shape, tmp.shape])
-        hawkes_process.load_weights(f'./checkpoints_{self.k_outer}/hawkes')
+        #tmp = tf.ones(shape=[1])
+        #hawkes_process.build([input_t_test.shape, tmp.shape])
+        #hawkes_process.load_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         for t in range(1, self.predicted_visit):
 
@@ -930,10 +916,12 @@ class ProposedModel():
             decode_h_generate_test = tf.Variable(
                 tf.zeros(shape=[batch_test, hidden_size]))
 
+            '''
             current_time_index_shape_test = \
                 tf.ones(shape=[t])
             intensity_value_test, likelihood_test = \
                 hawkes_process([input_t_test, current_time_index_shape_test])
+            '''
 
             # Generate the t+1 (t_1) patient vector:
             input_t_1_generated, decode_c_generate_test, \
@@ -944,7 +932,7 @@ class ProposedModel():
                         context_state_test,
                         input_x_test[:, t, :],
                         decode_c_generate_test,
-                        decode_h_generate_test * intensity_value_test
+                        decode_h_generate_test
                     ]
                 )
 
@@ -993,45 +981,25 @@ class ProposedModel():
         # just, I have no words... Messy array expansion it is...
 
         # Expand the hyperparameters:
-        hidden_size, z_dims, learning_rate, \
-        l2_regularization, \
-        kl_imbalance, \
-        reconstruction_mse_imbalance, \
-        generated_mse_imbalance, \
-        likelihood_imbalance, \
-        generated_loss_imbalance = params
+        #hidden_size, z_dims, \
+        learning_rate, \
+        l2_regularization = params
+        #reconstruction_mse_imbalance, \
+        #generated_mse_imbalance \
 
         # make them a nice dict as they should be, then pass them around:
         params_d = {
-            'hidden_size':hidden_size,
-            'z_dims':z_dims,
+            #'hidden_size':hidden_size,
+            #'z_dims':z_dims,
             'learning_rate':learning_rate,
             'l2_regularization':l2_regularization,
-            'generated_mse_imbalance':generated_mse_imbalance,
-            'generated_loss_imbalance':generated_loss_imbalance,
-            'kl_imbalance':kl_imbalance,
-            'reconstruction_mse_imbalance':reconstruction_mse_imbalance,
-            'likelihood_imbalance':likelihood_imbalance
+            #'reconstruction_mse_imbalance':reconstruction_mse_imbalance,
+            #'generated_mse_imbalance':generated_mse_imbalance
         }
-
-        # Use Keras to train the model.
-        mse_all = []
-        r_value_all = []
-        mae_all = []
-
-        print(f'hidden_size---{hidden_size}---z_dims---'
-              f'{z_dims}---l2_regularization---{z_dims}'
-              f'---learning_rate---{learning_rate}--'
-              f'generated_mse_imbalance---'
-              f'{generated_mse_imbalance}---generated_loss_imbalance---'
-              f'{generated_loss_imbalance}---'
-              f'kl_imbalance---{kl_imbalance}---reconstruction_mse_imbalance---'
-              f'{reconstruction_mse_imbalance}---'
-              f'likelihood_imbalance---{likelihood_imbalance}')
 
         # As a nested CV we need (for this hyperparameter setting) to
         # calculate the average score over all L (K-1 in our setting) folds.
-        mse_arr = []
+        loss_arr = []
         for k_inner in range(self.K):
             if k_inner != self.k_outer:
 
@@ -1048,13 +1016,14 @@ class ProposedModel():
                     train_idx=k_train_idx,
                     test_idx=k_test_idx,
                 )
-                mse = self.train(run_valid=True, **params_d)
-                mse_arr.append(mse.numpy())
+                # This returns the validation loss:
+                loss = self.train(run_valid=True, **params_d)
+                loss_arr.append(loss)
 
         tf.compat.v1.reset_default_graph()
 
-        mse_average = np.array(mse_arr).mean()
-        print(f"MSE:{mse_average}")
+        mse_average = np.array(loss_arr).mean()
+        print(f"LOSS (validation):{mse_average}\n")
         return mse_average
         # This function exactly comes from :Hvass-Labs, TensorFlow-Tutorials
 
@@ -1064,43 +1033,36 @@ class ProposedModel():
         :return:
         '''
         dimensions = [
-            hidden_size := Integer(low=4, high=64, name='hidden_size'),
-            z_dims := Integer(low=4, high=64, name='z_dims'),
+            #hidden_size := Integer(low=4, high=64, name='hidden_size'),
+            #z_dims := Integer(low=4, high=64, name='z_dims'),
             learning_rate := Real(low=1e-6, high=1e-1, prior='log-uniform',
                                   name='learning_rate'),
-            l2_regularization := Real(low=-5, high=1, name='l2_regularization'),
-            kl_imbalance := Real(low=-6, high=1, name='kl_imbalance'),
-            reconstruction_mse_imbalance := Real(low=-6, high=1,
-                                                 name='reconstruction_mse_imbalance'),
-            generated_mse_imbalance := Real(low=-6, high=1,
-                                            name='generated_mse_imbalance'),
-            likelihood_imbalance := Real(low=-6, high=3,
-                                         name='likelihood_imbalance'),
-            generated_loss_imbalance := Real(low=-6, high=1,
-                                             name='generated_loss_imbalance'),
-
+            l2_regularization := Real(low=0, high=1, name='l2_regularization'),
+            #reconstruction_mse_imbalance := Real(low=-6, high=1,
+            #
+            #                                     name='reconstruction_mse_imbalance'),
+            #generated_mse_imbalance := Real(low=-6, high=1,
+            #                                name='generated_mse_imbalance'),
         ]
         dim_names = [
-            "hidden_size",
-            "z_dims",
+            #"hidden_size",
+            #"z_dims",
             "learning_rate",
             "l2_regularization",
-            "kl_imbalance",
-            "reconstruction_mse_imbalance",
-            "generated_mse_imbalance",
-            "likelihood_imbalance",
-            "generated_loss_imbalance",
+            #"reconstruction_mse_imbalance",
+            #"generated_mse_imbalance",
         ]
 
-        default_parameters = [32,
-                              64,
-                              0.007122273166129031,
-                              8.931354194538156e-05,
-                              0.00462105286455568,
-                              0.003925185127256372,
-                              0.23927614146670084,
-                              2.3046966638597164,
-                              0.03568210662431517,
+        default_parameters = [
+            #32,
+            #64,
+            0.007122273166129031,
+            # Use larger regularization to see the learning rate:
+            #8.931354194538156e-05,
+            0.5,
+
+            #0.00462105286455568,
+            #0.003925185127256372,
                               ]
 
         x0 = default_parameters
@@ -1120,7 +1082,7 @@ class ProposedModel():
             func=self.evaluate,
             dimensions=dimensions,
             acq_func='EI',  # Expected Improvement.
-            n_calls=11,
+            n_calls=100,
             x0=x0,
             y0=y0,
             callback=[checkpoint_saver],
@@ -1140,15 +1102,12 @@ class ProposedModel():
 
         # make them a nice dict as they should be, then pass them around:
         params_d = {
-            'hidden_size': search_result.x[0],
-            'z_dims': search_result.x[1],
-            'learning_rate': search_result.x[2],
-            'l2_regularization': search_result.x[3],
-            'kl_imbalance': search_result.x[4],
-            'reconstruction_mse_imbalance': search_result.x[5],
-            'generated_mse_imbalance': search_result.x[6],
-            'likelihood_imbalance': search_result.x[7],
-            'generated_loss_imbalance': search_result.x[8],
+            #'hidden_size': search_result.x[0],
+            #'z_dims': search_result.x[1],
+            'learning_rate': search_result.x[0],
+            'l2_regularization': search_result.x[1],
+            #'reconstruction_mse_imbalance': search_result.x[4],
+            #'generated_mse_imbalance': search_result.x[5],
         }
 
         # Return the best hyperparameters:

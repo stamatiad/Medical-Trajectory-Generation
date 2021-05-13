@@ -44,7 +44,7 @@ class DataSet(object):
             else:
                 self._index_in_epoch += self._batch_size
                 end = self._index_in_epoch
-                yield self._dynamic_features[start:end]
+                yield self._dynamic_features[start:end, :, :]
 
     def predict_next_batch(self,batch_size):
         if batch_size > self._num_examples or batch_size <=0:

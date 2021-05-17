@@ -25,7 +25,7 @@ class ProposedModel():
         ''' Loads and splits dataset into train/test
         '''
 
-        self.epochs = 30
+        self.epochs = 101
         self.fout_name = f"test2_e{self.epochs}"
         self.save_model = save_model
         self.k_outer = -1
@@ -185,6 +185,36 @@ class ProposedModel():
                 plt.savefig(f'Feature_{feature}.png')
                 plt.close()
 
+
+    def get_outer_fold_indices(self):
+        # For all K folds:
+        for k in range(self.K):
+            #inform the state of the model
+            self.k_outer = k
+            # Calculate outer CV indices:
+            k_train_idx = np.zeros((0,), dtype=int)
+            for kk in range(self.K):
+                if kk != self.k_outer:
+                    k_train_idx = np.concatenate(
+                        (k_train_idx, self.K_idx[kk])
+                    )
+            k_test_idx = self.K_idx[self.k_outer]
+            yield (k, k_train_idx, k_test_idx)
+        return
+
+    def get_inner_fold_indices(self):
+        for k_inner in range(self.K):
+            if k_inner != self.k_outer:
+                # Calculate inner CV indices:
+                k_train_idx = np.zeros((0,), dtype=int)
+                for k in range(self.K):
+                    if k != self.k_outer and k != k_inner:
+                        k_train_idx = np.concatenate(
+                            (k_train_idx,self.K_idx[ k])
+                        )
+                k_test_idx = self.K_idx[k_inner]
+                yield (k_inner, k_train_idx, k_test_idx)
+        return
 
     def preprocessing(self, train_idx=None, test_idx=None, inner=True):
         '''
@@ -482,36 +512,6 @@ class ProposedModel():
                                 encode_h_i
                             )
 
-                        # Prospa8w na katalabw ti ginetai me to previous visit. Den
-                        # einai apla to starting point? Edw blepw oti to
-                        # current_time_index_shape einai megalytero apo to diff
-                        # previous-predicted pou 8a perimena...
-                        # As ftasw mexri edw k blepw meta..
-                        # TODO: make the HP returning a uniform conditional intensity
-                        #  function lambda(t). This is because we do not need the
-                        #  extra modeling power of the HP, since our admission
-                        #  intervals are uniformly spread checkpoints.
-
-                        '''
-                        current_time_index_shape = \
-                            tf.ones(shape=[t])
-
-                        # TODO: does HP handle the larger input_t_train array? Yes
-                        #  BUT I don't understand the way.
-                        condition_value, likelihood = \
-                            hawkes_process([input_t_train, current_time_index_shape])
-                        #TODO: Here likelihood is for a single time point. Is this
-                        # valid? Based on the author values I should not get more
-                        # than a single value?? What is going on?
-                        # Why here author uses tuple instead of list as argument?
-                        probability_likelihood = \
-                            tf.concat(
-                                (probability_likelihood, tf.reshape(likelihood, [batch, -1, 1])),
-                                axis=1
-                            )
-                        probability_likelihood = \
-                            tf.keras.activations.softmax(probability_likelihood)
-                        '''
                         # TODO: for what time points are the generation and
                         #  reconstruction respectively?
                         generated_next_visit, decode_c_generate, decode_h_generate = \
@@ -632,12 +632,6 @@ class ProposedModel():
                         batch_loss += tf.keras.regularizers.l2(l2_regularization)(weight)
                         variables.append(weight)
 
-                    '''
-                    for weight in hawkes_process.trainable_variables:
-                        loss += tf.keras.regularizers.l2(l2_regularization)(weight)
-                        variables.append(weight)
-                    '''
-
                 epoch_loss += batch_loss
                 epoch_loss_only += batch_loss_only
 
@@ -650,34 +644,10 @@ class ProposedModel():
                 gradient_gen = gen_tape.gradient(batch_loss, variables)
                 optimizer_generation.apply_gradients(zip(gradient_gen, variables))
 
-                # Why does the author loads the weights? Should he be saving them
-                # instead? Also the modulo operator is ALWAYS 0 so why is there?
-                # Also authors keep only the first batch of each epoch logged???
-
-                #if train_set.epoch_completed % 1 == 0 and train_set.epoch_completed
-                # not in logged:
-
-                #TODO: I'm not sure what is this about:
-
                 #encode_share.load_weights('encode_share_3_3_mimic.h5')
                 #decoder_share.load_weights('decode_share_3_3_mimic.h5')
                 #post_net.load_weights('post_net_3_3_mimic.h5')
                 #prior_net.load_weights('prior_net_3_3_mimic.h5')
-                #hawkes_process.load_weights('hawkes_process_3_3_mimic.h5')
-
-                #logged.add(train_set.epoch_completed)
-
-                mse_generated = tf.reduce_mean(
-                    tf.keras.losses.mse(
-                        train_batch[:,
-                        self.previous_visit:self.previous_visit_idx
-                                            +self.predicted_visit, :],
-                        generated_trajectory
-                    )
-                )
-
-                #mse_generated_arr.append(mse_generated.numpy())
-                #mae_generated_arr[0, train_iter] = mae_generated
 
                 # ======================================================================
                 # Training batch finishes
@@ -742,13 +712,6 @@ class ProposedModel():
                         decode_c_generate_valid = tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
                         decode_h_generate_valid = tf.Variable(tf.zeros(shape=[batch_valid, hidden_size]))
 
-                        '''
-                        current_time_index_shape_valid = \
-                            tf.ones(shape=[t])
-                        intensity_value_valid, likelihood_valid = \
-                            hawkes_process([input_t_valid, current_time_index_shape_valid])
-                        '''
-
                         # Generate the t+1 (t_1) patient vector:
                         input_t_1_generated, decode_c_generate_valid, \
                         decode_h_generate_valid = \
@@ -784,12 +747,6 @@ class ProposedModel():
                         )
                     )
 
-                    #print(f"\t\tBATCHID = {train_set.batch_completed} MSE_TEST ="
-                    #      f" {mse_generated_test}")
-                    #print(f"\t\tBATCHID = {train_set.batch_completed} MAE_TEST ="
-                    #      f" {mae_generated_test}")
-                    #mae_generated_valid_arr[0, train_iter] = mae_generated_valid
-
                     # Gather validation across all batches:
                     valid_loss += mse_generated_valid
 
@@ -813,7 +770,6 @@ class ProposedModel():
             decoder_share.save_weights(f'./checkpoints_{self.k_outer}/decoder')
             post_net.save_weights(f'./checkpoints_{self.k_outer}/post_net')
             prior_net.save_weights(f'./checkpoints_{self.k_outer}/prior_net')
-            #hawkes_process.save_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         tf.compat.v1.reset_default_graph()
         '''
@@ -854,9 +810,6 @@ class ProposedModel():
         )
         prior_net = Prior(z_dims=z_dims)
 
-        #hawkes_process = HawkesProcess()
-
-
         input_x_test = tf.constant(
             self.unstack_to_mat(self.test_df, self.feature_dims),
             dtype=tf.float32
@@ -884,9 +837,6 @@ class ProposedModel():
         encode_share.load_weights(f'./checkpoints_{self.k_outer}/encoder')
         decoder_share.load_weights(f'./checkpoints_{self.k_outer}/decoder')
         prior_net.load_weights(f'./checkpoints_{self.k_outer}/prior_net')
-        #tmp = tf.ones(shape=[1])
-        #hawkes_process.build([input_t_test.shape, tmp.shape])
-        #hawkes_process.load_weights(f'./checkpoints_{self.k_outer}/hawkes')
 
         for t in range(1, self.predicted_visit):
 
@@ -915,13 +865,6 @@ class ProposedModel():
                 tf.zeros(shape=[batch_test, hidden_size]))
             decode_h_generate_test = tf.Variable(
                 tf.zeros(shape=[batch_test, hidden_size]))
-
-            '''
-            current_time_index_shape_test = \
-                tf.ones(shape=[t])
-            intensity_value_test, likelihood_test = \
-                hawkes_process([input_t_test, current_time_index_shape_test])
-            '''
 
             # Generate the t+1 (t_1) patient vector:
             input_t_1_generated, decode_c_generate_test, \
@@ -1000,30 +943,19 @@ class ProposedModel():
         # As a nested CV we need (for this hyperparameter setting) to
         # calculate the average score over all L (K-1 in our setting) folds.
         loss_arr = []
-        for k_inner in range(self.K):
-            if k_inner != self.k_outer:
-
-                # Calculate inner CV indices:
-                k_train_idx = np.zeros((0,), dtype=int)
-                for k in range(self.K):
-                    if k != self.k_outer and k != k_inner:
-                        k_train_idx = np.concatenate(
-                            (k_train_idx,self.K_idx[ k])
-                        )
-                k_test_idx = self.K_idx[k_inner]
-
-                self.preprocessing(
-                    train_idx=k_train_idx,
-                    test_idx=k_test_idx,
-                )
-                # This returns the validation loss:
-                loss = self.train(run_valid=True, **params_d)
-                loss_arr.append(loss)
+        for k_inner, k_train_idx, k_test_idx in self.get_inner_fold_indices():
+            self.preprocessing(
+                train_idx=k_train_idx,
+                test_idx=k_test_idx,
+            )
+            # This returns the validation loss:
+            loss = self.train(run_valid=True, **params_d)
+            loss_arr.append(loss)
 
         tf.compat.v1.reset_default_graph()
 
         mse_average = np.array(loss_arr).mean()
-        print(f"LOSS (validation):{mse_average}\n")
+        print(f"LOSS (validation, inner fold: {k_inner}):{mse_average}\n")
         return mse_average
         # This function exactly comes from :Hvass-Labs, TensorFlow-Tutorials
 
@@ -1037,7 +969,8 @@ class ProposedModel():
             #z_dims := Integer(low=4, high=64, name='z_dims'),
             learning_rate := Real(low=1e-6, high=1e-1, prior='log-uniform',
                                   name='learning_rate'),
-            l2_regularization := Real(low=0, high=1, name='l2_regularization'),
+            l2_regularization := Real(low=0, high=0.5, 
+                                      name='l2_regularization'),
             #reconstruction_mse_imbalance := Real(low=-6, high=1,
             #
             #                                     name='reconstruction_mse_imbalance'),
@@ -1082,10 +1015,10 @@ class ProposedModel():
             func=self.evaluate,
             dimensions=dimensions,
             acq_func='EI',  # Expected Improvement.
-            n_calls=100,
+            n_calls=11,
             x0=x0,
             y0=y0,
-            callback=[checkpoint_saver],
+            #callback=[checkpoint_saver],
             n_jobs=8
         )
         # dump results to continue from later on:
@@ -1151,27 +1084,19 @@ def main():
     # Do nested CV:
     k_fold_scores = []
     hyperparams_d = {}
-    for k in range(model.K):
-        model.k_outer = k
+    # Loop the outer CV folds:
+    for k, k_train_idx, k_test_idx in model.get_outer_fold_indices():
 
-        # Calculate outer CV indices:
-        k_train_idx = np.zeros((0,), dtype=int)
-        for kk in range(model.K):
-            if kk != model.k_outer:
-                k_train_idx = np.concatenate(
-                    (k_train_idx, model.K_idx[kk])
-                )
-        k_test_idx = model.K_idx[model.k_outer]
+        # Loop the inner CV folds:
+        best_hyperparameters, skopt_result = model.hyperparameter_optimization()
+        hyperparams_d[k]= (best_hyperparameters, skopt_result)
 
         model.preprocessing(
             train_idx=k_train_idx,
             test_idx=k_test_idx,
             inner=False
         )
-        best_hyperparameters, skopt_result = model.hyperparameter_optimization()
-        hyperparams_d[k]= (best_hyperparameters, skopt_result)
-
-        # Compare best model /hypers to the test
+        # Compare best model /hyperparameters to the test
         model.train(
             save_model=True,
             run_valid=False,

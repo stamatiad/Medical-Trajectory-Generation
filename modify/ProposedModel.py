@@ -25,7 +25,7 @@ class ProposedModel():
         ''' Loads and splits dataset into train/test
         '''
 
-        self.epochs = 101
+        self.epochs = 40
         self.fout_name = f"test2_e{self.epochs}"
         self.save_model = save_model
         self.k_outer = -1
@@ -156,7 +156,8 @@ class ProposedModel():
         seed = 0
         self.K_idx = {}
         # Do split the data based on seed:
-        idx_all = np.random.permutation(patient_no)
+        random_state = np.random.RandomState(0)
+        idx_all = random_state.permutation(patient_no)
         step = int(patient_no / self.K)
         for k in range(self.K):
             self.K_idx[k] = np.array(idx_all[k*step:(k+1)*step])
@@ -341,6 +342,8 @@ class ProposedModel():
         generated_mse_imbalance = kwargs.get('generated_mse_imbalance', self.generated_mse_imbalance)
         reconstruction_mse_imbalance = kwargs.get('reconstruction_mse_imbalance', self.reconstruction_mse_imbalance)
 
+        tf.compat.v1.reset_default_graph()
+
         batch_size = 64
         epochs = self.epochs
 
@@ -362,9 +365,6 @@ class ProposedModel():
 
         # Define debug global vars:
         epochs_loss_arr = tf.TensorArray(
-            dtype=tf.float32, size=0,
-            dynamic_size=True, clear_after_read=False)
-        epochs_loss_only_arr = tf.TensorArray(
             dtype=tf.float32, size=0,
             dynamic_size=True, clear_after_read=False)
         #mae_generated_arr = np.zeros((1, t_len), dtype=float)
@@ -415,7 +415,6 @@ class ProposedModel():
 
         for epoch in range(epochs):
             epoch_loss = 0
-            epoch_loss_only = 0
             for train_batch in train_set.next_batch():
                 batch_loss = 0
 
@@ -614,7 +613,6 @@ class ProposedModel():
 
                     # Keep track of loss without regularization (to be
                     # comparable with validation loss):
-                    batch_loss_only = batch_loss
 
                     variables = [var for var in encode_share.trainable_variables]
                     for weight in encode_share.trainable_variables:
@@ -633,7 +631,6 @@ class ProposedModel():
                         variables.append(weight)
 
                 epoch_loss += batch_loss
-                epoch_loss_only += batch_loss_only
 
                 if Debug:
                     print(f"Batch completed {train_set.batch_completed}. Epoch "
@@ -663,9 +660,6 @@ class ProposedModel():
             # Epoch completed:
             epochs_loss_arr = \
                 epochs_loss_arr.write(epoch, epoch_loss / \
-                                                    train_set._total_batches_no)
-            epochs_loss_only_arr = \
-                epochs_loss_only_arr.write(epoch, epoch_loss_only /
                                                     train_set._total_batches_no)
 
             # ======================================================================
@@ -764,35 +758,20 @@ class ProposedModel():
             # ======================================================================
 
         # Save the model to use it on test:
-        '''
         if save_model:
             encode_share.save_weights(f'./checkpoints_{self.k_outer}/encoder')
             decoder_share.save_weights(f'./checkpoints_{self.k_outer}/decoder')
             post_net.save_weights(f'./checkpoints_{self.k_outer}/post_net')
             prior_net.save_weights(f'./checkpoints_{self.k_outer}/prior_net')
 
-        tf.compat.v1.reset_default_graph()
-        '''
-
         if run_valid:
             loss = epochs_val_loss_arr.stack().numpy()[-1]
         else:
             loss = epochs_loss_arr.stack().numpy()[-1]
 
-        if True:
-            if run_valid:
-                fig, ax = plt.subplots()
-                ax.plot(epochs_loss_arr.stack().numpy(), color='C0',
-                        label='MSE_train')
-                ax.plot(epochs_loss_only_arr.stack().numpy(), color='C1',
-                        label='MSE_train_noreg')
-                ax.plot(epochs_val_loss_arr.stack().numpy(), color='C2',
-                        label='MSE_valid')
-                plt.legend()
-                plt.savefig(f'Error_e_{epochs}_{loss:.5f}.png')
-                plt.close()
 
-        return loss
+        return (loss, epochs_loss_arr.stack().numpy(),
+        epochs_val_loss_arr.stack().numpy())
 
 
     def test(self, **kwargs):
@@ -898,18 +877,6 @@ class ProposedModel():
             )
         )
 
-        '''
-        r_value_all = []
-        p_value_all = []
-
-        for r in range(predicted_visit):
-            x_ = tf.reshape(input_x_test[:, previous_visit + r, :], (-1,))
-            y_ = tf.reshape(generated_trajectory_test[:, r, :], (-1,))
-            r_value_ = stats.pearsonr(x_, y_)
-            r_value_all.append(r_value_[0])
-            p_value_all.append(r_value_[1])
-        '''
-
         return mse_generated_test #, np.mean(r_value_all)
 
 
@@ -924,7 +891,7 @@ class ProposedModel():
         # just, I have no words... Messy array expansion it is...
 
         # Expand the hyperparameters:
-        #hidden_size, z_dims, \
+        hidden_size, z_dims, \
         learning_rate, \
         l2_regularization = params
         #reconstruction_mse_imbalance, \
@@ -932,8 +899,8 @@ class ProposedModel():
 
         # make them a nice dict as they should be, then pass them around:
         params_d = {
-            #'hidden_size':hidden_size,
-            #'z_dims':z_dims,
+            'hidden_size':hidden_size,
+            'z_dims':z_dims,
             'learning_rate':learning_rate,
             'l2_regularization':l2_regularization,
             #'reconstruction_mse_imbalance':reconstruction_mse_imbalance,
@@ -943,19 +910,41 @@ class ProposedModel():
         # As a nested CV we need (for this hyperparameter setting) to
         # calculate the average score over all L (K-1 in our setting) folds.
         loss_arr = []
+        loss_train_arr = []
+        loss_valid_arr = []
         for k_inner, k_train_idx, k_test_idx in self.get_inner_fold_indices():
             self.preprocessing(
                 train_idx=k_train_idx,
                 test_idx=k_test_idx,
             )
             # This returns the validation loss:
-            loss = self.train(run_valid=True, **params_d)
+            loss, train_loss, valid_loss = \
+                self.train(run_valid=True, **params_d)
             loss_arr.append(loss)
-
-        tf.compat.v1.reset_default_graph()
+            loss_train_arr.append(train_loss)
+            loss_valid_arr.append(valid_loss)
 
         mse_average = np.array(loss_arr).mean()
-        print(f"LOSS (validation, inner fold: {k_inner}):{mse_average}\n")
+
+        # Plot the average train/valid loss:
+        if True:
+            fig, ax = plt.subplots()
+            ax.plot(np.array(loss_train_arr).mean(axis=0), color='C0',
+                    label='MSE_train')
+            ax.plot(np.array(loss_valid_arr).mean(axis=0), color='C1',
+                    label='MSE_valid')
+            ax.set_xlabel('Epochs')
+            ax.set_ylabel('Average MSE')
+            plt.legend()
+            plt.savefig(f'Error_e_{self.epochs}_train_fold_'
+                        f'{self.k_outer}_'
+                        f'hd_{hidden_size}_'
+                        f'zd_{z_dims}_'
+                        f'lr{learning_rate}_'
+                        f'l2_{l2_regularization}_'
+                        f'mse{mse_average}.png')
+            plt.close()
+
         return mse_average
         # This function exactly comes from :Hvass-Labs, TensorFlow-Tutorials
 
@@ -965,21 +954,16 @@ class ProposedModel():
         :return:
         '''
         dimensions = [
-            #hidden_size := Integer(low=4, high=64, name='hidden_size'),
-            #z_dims := Integer(low=4, high=64, name='z_dims'),
-            learning_rate := Real(low=1e-6, high=1e-1, prior='log-uniform',
-                                  name='learning_rate'),
-            l2_regularization := Real(low=0, high=0.5, 
-                                      name='l2_regularization'),
-            #reconstruction_mse_imbalance := Real(low=-6, high=1,
-            #
-            #                                     name='reconstruction_mse_imbalance'),
-            #generated_mse_imbalance := Real(low=-6, high=1,
-            #                                name='generated_mse_imbalance'),
+            hidden_size := Categorical([4, 8, 16], name='hidden_size'),
+            z_dims := Categorical([4, 8, 16], name='z_dims'),
+            learning_rate := Categorical([0.001, 0.005, 0.01, 0.05, 0.1],
+                        name='learning_rate'),
+            l2_regularization := Categorical([1.0e-2, 1.0e-3, 1.0e-4],
+                        name='l2_regularization'),
         ]
         dim_names = [
-            #"hidden_size",
-            #"z_dims",
+            "hidden_size",
+            "z_dims",
             "learning_rate",
             "l2_regularization",
             #"reconstruction_mse_imbalance",
@@ -987,58 +971,46 @@ class ProposedModel():
         ]
 
         default_parameters = [
-            #32,
-            #64,
-            0.007122273166129031,
-            # Use larger regularization to see the learning rate:
-            #8.931354194538156e-05,
-            0.5,
-
-            #0.00462105286455568,
-            #0.003925185127256372,
+            4,
+            4,
+            0.005,
+            0.001,
                               ]
 
         x0 = default_parameters
         y0 = None
 
-        checkpoint_saver = CheckpointSaver(f"k_{self.k_outer}_"
-                                           f"e_{self.epochs}.pkl",
+        checkpoint_saver = CheckpointSaver(f"CHECKPOINT.pkl",
                                            compress=9)
-
-        if False:
-            search_result = load(f'Checkpoint_{self.fout_name}.pkl')
-            x0 = search_result.x_iters
-            y0 = search_result.func_vals
+        search_result = load(f'CHECKPOINT.pkl')
+        plot_convergence(search_result)
+        # plt.show()
+        plt.savefig(f'convergence_CHECKPOINT.png')
+        plot_objective(result=search_result, dimensions=dim_names)
+        # plt.show()
+        plt.savefig(f'CHECKPOINT_GP.png', dpi=400)
+        x0 = search_result.x_iters
+        y0 = search_result.func_vals
 
         #TODO: to seed the RNG, so hyperparams are the same across K folds!
         search_result = skopt.gp_minimize(
             func=self.evaluate,
             dimensions=dimensions,
             acq_func='EI',  # Expected Improvement.
-            n_calls=11,
+            n_calls=40,
             x0=x0,
             y0=y0,
-            #callback=[checkpoint_saver],
+            random_state=np.random.RandomState(0),
+            callback=[checkpoint_saver],
             n_jobs=8
         )
-        # dump results to continue from later on:
-        # dump(search_result, 'search_results.pkl')
-
-        if False:
-            plot_convergence(search_result)
-            #plt.show()
-            plt.savefig(f'convergence_{self.fout_name}.png')
-            plot_objective(result=search_result, dimensions=dim_names)
-            #plt.show()
-            plt.savefig(f'all_dims_{self.fout_name}.png', dpi=400)
-            print('PRONTO!')
 
         # make them a nice dict as they should be, then pass them around:
         params_d = {
-            #'hidden_size': search_result.x[0],
-            #'z_dims': search_result.x[1],
-            'learning_rate': search_result.x[0],
-            'l2_regularization': search_result.x[1],
+            'hidden_size': search_result.x[0],
+            'z_dims': search_result.x[1],
+            'learning_rate': search_result.x[2],
+            'l2_regularization': search_result.x[3],
             #'reconstruction_mse_imbalance': search_result.x[4],
             #'generated_mse_imbalance': search_result.x[5],
         }
@@ -1090,13 +1062,15 @@ def main():
         # Loop the inner CV folds:
         best_hyperparameters, skopt_result = model.hyperparameter_optimization()
         hyperparams_d[k]= (best_hyperparameters, skopt_result)
+        print(f"Best hyperparams of inner folds are: {best_hyperparameters}")
 
         model.preprocessing(
             train_idx=k_train_idx,
             test_idx=k_test_idx,
             inner=False
         )
-        # Compare best model /hyperparameters to the test
+        # Compare best model /hyperparameters to the test. Save the model for
+        # the test to load it.
         model.train(
             save_model=True,
             run_valid=False,
@@ -1104,33 +1078,25 @@ def main():
         )
         mse_test = model.test(**best_hyperparameters)
         k_fold_scores.append(mse_test.numpy())
+        print(f"AVERAGE TEST LOSS (test fold: {k})"
+              f":{mse_test}\n")
 
     # Average score over all K folds is the generalization error:
     gen_error = np.array(k_fold_scores).mean()
 
     print(f"Generalization ERROR: {gen_error}")
 
-    # Train the model with the best hyperparameters
+    # Train the model with the best hyperparameters:
+    best_loss = np.inf
+    best_hypers = None
+    for (hyper, result) in hyperparams_d.values():
+        if result.fun < best_loss:
+            best_loss = result.fun
+            best_hypers = hyper
+
+    print(f"Best hyperparams of nested CV are: {best_hypers}")
+    # Now the production model can be trained on all the existing data:
     #model.train(run_valid=False, **best_hyperparameters)
-
-    if False:
-        # Get optimal params
-        #search_result = load(f'{model.fout_name}.pkl')
-        search_result = load(f'checkpoint_test.pkl')
-        params_d = {
-            'hidden_size': search_result.x[0],
-            'z_dims': search_result.x[1],
-            'learning_rate': search_result.x[2],
-            'l2_regularization': search_result.x[3],
-            'kl_imbalance': search_result.x[4],
-            'reconstruction_mse_imbalance': search_result.x[5],
-            'generated_mse_imbalance': search_result.x[6],
-            'likelihood_imbalance': search_result.x[7],
-            'generated_loss_imbalance': search_result.x[8],
-        }
-        mse, mae, r_value = model.train(**params_d)
-
-    print("Pronto!")
 
 
 if __name__ == '__main__':

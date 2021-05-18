@@ -15,8 +15,8 @@ class DataSet(object):
         self._batch_completed = 0
         self._index_in_epoch = 0
         self._batch_size = batch_size
-        self._total_batches_no = int(np.ceil(self._num_examples /
-                                           self._batch_size))
+        self._total_batches_no = int(self._num_examples /
+                                           self._batch_size)
 
     def next_batch(self):
         '''
@@ -24,42 +24,19 @@ class DataSet(object):
         :return:
         '''
         for batch in range(self._total_batches_no):
-            if self._batch_size > self._num_examples or self._batch_size <=0:
-                batch_size = self._dynamic_features.shape[0]
             if self._batch_completed == 0:
                 self._shuffle()
-            self._batch_completed += 1
             start = self._index_in_epoch
-            if start + self._batch_size >= self._num_examples:
-                # Here we have depleted whole batches and we use what has left,
-                # before changing the epoch.
-                #print(f"\t\EPOCH {self._epoch_completed} COMPLETED!")
-                self._epoch_completed += 1
-                #Keep track on the dataset the n umber of epochs passed. Use the
-                # id to shuffle it differently each time.
-                dynamic_rest_part = self._dynamic_features[start:self._num_examples]
-                self._shuffle()
-                self._index_in_epoch = 0
-                yield dynamic_rest_part
-            else:
-                self._index_in_epoch += self._batch_size
-                end = self._index_in_epoch
-                yield self._dynamic_features[start:end, :, :]
 
-    def predict_next_batch(self,batch_size):
-        if batch_size > self._num_examples or batch_size <=0:
-            batch_size = self._dynamic_features.shape[0]
-        self._batch_completed += 1
-        start = self._index_in_epoch
-        if start + batch_size >= self._num_examples:
-            self._epoch_completed += 1
-            dynamic_rest_part = self._dynamic_features[start:self._num_examples]
-            self._index_in_epoch = 0
-            return dynamic_rest_part
-        else:
-            self._index_in_epoch += batch_size
+            self._index_in_epoch += self._batch_size
             end = self._index_in_epoch
-            return self._dynamic_features[start:end]
+            yield self._dynamic_features[start:end, :, :]
+            self._batch_completed += 1
+
+        self._epoch_completed += 1
+        self._batch_completed = 0
+        self._index_in_epoch = 0
+        return
 
     #@utils.with_reproducible_rng
     def _shuffle(self):
